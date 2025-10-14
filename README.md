@@ -7,6 +7,8 @@ Explication des différents fichiers :
 étape 1 : face_extraction.py -> Extraction frame par frame, détection et alignement des visages <br>
 étape 2 : face_extraction.py -> Alignement + masque (face_masking.py)<br>
 étape 3 : entrainement du model -> q96 <br>
-étape 4 : Créer la vidéo fake -> merge_frames_to_fake_video
+étape 4 : Créer la vidéo fake -> merge_frames_to_fake_video<br>
+
+Le fichier Video_face_swap.ipynb est notre base pour le dataset des vidéos, nous avons directement demandé l'autorisation à FaceForensic pour obtenir des images utiles à notre entrainement de Face Swap. 
 
 
