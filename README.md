@@ -4,9 +4,9 @@ Prototype de transfert d’identité faciale basé sur un encodeur partagé et d
 
 Explication des différents fichiers : 
 
-étape 1 : face_extraction.py -> Extraction frame par frame, détection et alignement des visages 
-étape 2 : face_extraction.py -> Alignement + masque (face_masking.py)
-étape 3 : entrainement du model -> q96 
+étape 1 : face_extraction.py -> Extraction frame par frame, détection et alignement des visages <br>
+étape 2 : face_extraction.py -> Alignement + masque (face_masking.py)<br>
+étape 3 : entrainement du model -> q96 <br>
 étape 4 : Créer la vidéo fake -> merge_frames_to_fake_video
 
 
