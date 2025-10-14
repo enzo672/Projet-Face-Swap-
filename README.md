@@ -5,3 +5,5 @@ Explication des différents fichiers :
 
 face_extraction.py -> Extraction frame par frame, détection et alignement des visages 
 
+face_masking.py -> Masque binaire du visage 
+
