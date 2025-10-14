@@ -3,17 +3,13 @@ import face_extraction_tools as fet
 import quick96 as q96
 from merge_frame_to_fake_video import merge_frames_to_fake_video
 
-##### user parameters #####
-# True for executing the step
 extract_and_align_src = True
 extract_and_align_dst = True
 train = True
 eval = False
 
-model_name = 'Quick96'  # use this name to save and load the model
-new_model = False  # True for creating a new model even if a model with the same name already exists
-
-##### end of user parameters #####
+model_name = 'Quick96'  
+new_model = False  
 
 # the path for the videos to process
 data_root = Path('./data')
