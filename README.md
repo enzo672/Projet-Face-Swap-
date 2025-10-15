@@ -11,7 +11,4 @@ Explication des différents fichiers :
 
 Le fichier Video_face_swap.ipynb est notre base pour le dataset des vidéos, nous avons directement demandé l'autorisation à FaceForensic pour obtenir des images utiles à notre entrainement de Face Swap. 
 
-Pour ce vendredi, il faut installer un env python "python -m venv env", l'activer "source env/bin/activate". installer le requirements.txt "pip install requirements.txt". <br>
-Il faut ensuite lancer main.py "python -u main.py" pour lancer l'entrainement Quick96.pth. 
-
 
