@@ -38,6 +38,12 @@ class FaceMasking:
         im_mp = mp.Image(image_format=mp.ImageFormat.SRGB, data=image.astype(np.uint8).copy())
         detection_result = self.detector.detect(im_mp)
 
+        if not detection_result.face_landmarks:
+            # Aucun visage détecté — retourner un masque vide de la bonne taille
+            h, w = image.shape[:2]
+            return np.zeros((h, w), dtype=np.uint8)
+
+        # Sinon, calculer normalement les points
         x = np.array([landmark.x * image.shape[1] for landmark in detection_result.face_landmarks[0]], dtype=np.float32)
         y = np.array([landmark.y * image.shape[0] for landmark in detection_result.face_landmarks[0]], dtype=np.float32)
 
