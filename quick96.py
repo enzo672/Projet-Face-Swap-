@@ -29,10 +29,6 @@ random_transform_args = {
     'random_flip': 0.5,
 }
 
-# --------------------------------------------------------------------------
-# --------------------------- DATA PREPARATION -----------------------------
-# --------------------------------------------------------------------------
-
 def get_training_data(images, batch_size):
     indices = np.random.randint(len(images), size=batch_size)
     for i, index in enumerate(indices):
@@ -114,10 +110,6 @@ class FaceData(Dataset):
         target_image_dst = torch.tensor(target_image_dst, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
         return warp_image_src, target_image_src, warp_image_dst, target_image_dst
 
-
-# --------------------------------------------------------------------------
-# --------------------------- MODEL COMPONENTS -----------------------------
-# --------------------------------------------------------------------------
 
 def pixel_norm(x, dim=-1):
     return x / torch.sqrt(torch.mean(x ** 2, dim=dim, keepdim=True) + 1e-06)
@@ -230,10 +222,6 @@ class Decoder(nn.Module):
         return torch.sigmoid(x)
 
 
-# --------------------------------------------------------------------------
-# ------------------------------ UTILITIES ---------------------------------
-# --------------------------------------------------------------------------
-
 def create_window(size=11, sigma=1.5, channels=1):
     gk1d = torch.tensor(cv2.getGaussianKernel(size, sigma), dtype=torch.float32)
     gk2d = gk1d @ gk1d.t()
@@ -301,10 +289,6 @@ def draw_results(reconstruct_src, target_src, reconstruct_dst, target_dst, fake,
     cv2.destroyAllWindows()
     return final_image
 
-
-# --------------------------------------------------------------------------
-# ----------------------------- TRAINING LOOP ------------------------------
-# --------------------------------------------------------------------------
 
 def train(data_path: str, model_name='Quick96', new_model=False, saved_models_dir='saved_model'):
     saved_models_dir = Path(saved_models_dir)
