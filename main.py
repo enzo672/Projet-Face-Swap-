@@ -7,8 +7,8 @@ from merge_frame_to_fake_video import merge_frames_to_fake_video
 
 extract_and_align_src = True
 extract_and_align_dst = True
-train = False
-eval = True
+train = True
+eval = False
 
 model_name = 'Quick96'
 new_model = False
