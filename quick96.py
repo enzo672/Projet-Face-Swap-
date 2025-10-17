@@ -18,6 +18,22 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 
+import platform
+import os
+
+def can_display():
+    """Detecte si on peut utiliser cv2.imshow (environnement graphique présent)"""
+    if platform.system() == "Linux":
+        return "DISPLAY" in os.environ and bool(os.environ["DISPLAY"])
+    elif platform.system() == "Darwin":  # macOS
+        return True
+    elif platform.system() == "Windows":
+        return True
+    return False
+
+HAS_DISPLAY = can_display()
+
+
 plt.style.use('dark_background')
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
