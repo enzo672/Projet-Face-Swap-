@@ -1,7 +1,6 @@
 import sys
 import os
-import datetime
-import time
+import platform
 from random import choice
 from glob import glob
 from pathlib import Path
@@ -15,29 +14,26 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from torchvision import transforms
 
-import platform
-import os
+plt.style.use('dark_background')
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+# --------------------------------------------------------------------------
+# --------------------------- DISPLAY DETECTION -----------------------------
+# --------------------------------------------------------------------------
 def can_display():
-    """Detecte si on peut utiliser cv2.imshow (environnement graphique présent)"""
+    """Detect if we can use cv2.imshow (presence of display server)"""
     if platform.system() == "Linux":
         return "DISPLAY" in os.environ and bool(os.environ["DISPLAY"])
-    elif platform.system() == "Darwin":  # macOS
-        return True
-    elif platform.system() == "Windows":
+    elif platform.system() in ["Darwin", "Windows"]:
         return True
     return False
 
 HAS_DISPLAY = can_display()
 
-
-plt.style.use('dark_background')
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
+# --------------------------------------------------------------------------
+# --------------------------- RANDOM AUGMENTATION ---------------------------
+# --------------------------------------------------------------------------
 random_transform_args = {
     'rotation_range': 10,
     'zoom_range': 0.05,
@@ -45,20 +41,18 @@ random_transform_args = {
     'random_flip': 0.5,
 }
 
+
 def get_training_data(images, batch_size):
     indices = np.random.randint(len(images), size=batch_size)
     for i, index in enumerate(indices):
         image = images[index]
         image = random_transform(image, **random_transform_args)
         warped_img, target_img = random_warp(image)
-
         if i == 0:
             warped_images = np.empty((batch_size,) + warped_img.shape, warped_img.dtype)
             target_images = np.empty((batch_size,) + target_img.shape, warped_img.dtype)
-
         warped_images[i] = warped_img
         target_images[i] = target_img
-
     return warped_images, target_images
 
 
@@ -100,7 +94,9 @@ def random_warp(image):
     target_image = cv2.warpAffine(image, similarity_mat, (w // 2, h // 2))
     return warped_image, target_image
 
-
+# --------------------------------------------------------------------------
+# ------------------------------- DATASET ----------------------------------
+# --------------------------------------------------------------------------
 class FaceData(Dataset):
     def __init__(self, data_path):
         self.image_files_src = glob(data_path + '/src/aligned/*.jpg')
@@ -119,26 +115,22 @@ class FaceData(Dataset):
     def collate_fn(self, batch):
         images_src, images_dst = list(zip(*batch))
         warp_image_src, target_image_src = get_training_data(images_src, len(images_src))
-        warp_image_src = torch.tensor(warp_image_src, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
-        target_image_src = torch.tensor(target_image_src, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
         warp_image_dst, target_image_dst = get_training_data(images_dst, len(images_dst))
-        warp_image_dst = torch.tensor(warp_image_dst, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
-        target_image_dst = torch.tensor(target_image_dst, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
-        return warp_image_src, target_image_src, warp_image_dst, target_image_dst
+        def to_torch(x): return torch.tensor(x, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
+        return to_torch(warp_image_src), to_torch(target_image_src), to_torch(warp_image_dst), to_torch(target_image_dst)
 
-
+# --------------------------------------------------------------------------
+# ------------------------------- NETWORK ----------------------------------
+# --------------------------------------------------------------------------
 def pixel_norm(x, dim=-1):
     return x / torch.sqrt(torch.mean(x ** 2, dim=dim, keepdim=True) + 1e-06)
 
 
 def depth_to_space(x, size=2):
     b, c, h, w = x.shape
-    out_h = size * h
-    out_w = size * w
-    out_c = c // (size * size)
-    x = x.reshape((-1, size, size, out_c, h, w))
-    x = x.permute((0, 3, 4, 1, 5, 2))
-    x = x.reshape((-1, out_c, out_h, out_w))
+    out_h, out_w, out_c = size*h, size*w, c // (size**2)
+    x = x.view(b, size, size, out_c, h, w)
+    x = x.permute(0, 3, 4, 1, 5, 2).reshape(b, out_c, out_h, out_w)
     return x
 
 
@@ -151,19 +143,13 @@ class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = nn.Sequential(
-            nn.Conv2d(3, 64, 5, stride=2, padding=2),
-            nn.LeakyReLU(0.1, True),
-            nn.Conv2d(64, 128, 5, stride=2, padding=2),
-            nn.LeakyReLU(0.1, True),
-            nn.Conv2d(128, 256, 5, stride=2, padding=2),
-            nn.LeakyReLU(0.1, True),
-            nn.Conv2d(256, 512, 5, stride=2, padding=2),
-            nn.LeakyReLU(0.1, True),
-            nn.Flatten(),
+            nn.Conv2d(3, 64, 5, stride=2, padding=2), nn.LeakyReLU(0.1, True),
+            nn.Conv2d(64, 128, 5, stride=2, padding=2), nn.LeakyReLU(0.1, True),
+            nn.Conv2d(128, 256, 5, stride=2, padding=2), nn.LeakyReLU(0.1, True),
+            nn.Conv2d(256, 512, 5, stride=2, padding=2), nn.LeakyReLU(0.1, True),
+            nn.Flatten()
         )
-
-    def forward(self, x):
-        return pixel_norm(self.encoder(x), dim=-1)
+    def forward(self, x): return pixel_norm(self.encoder(x), dim=-1)
 
 
 class Upsample(nn.Module):
@@ -174,9 +160,7 @@ class Upsample(nn.Module):
             nn.LeakyReLU(0.1, True),
             DepthToSpace()
         )
-
-    def forward(self, x):
-        return self.upsample(x)
+    def forward(self, x): return self.upsample(x)
 
 
 class ResBlock(nn.Module):
@@ -184,7 +168,6 @@ class ResBlock(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, in_channels, 3, padding='same')
         self.conv2 = nn.Conv2d(in_channels, in_channels, 3, padding='same')
-
     def forward(self, x):
         y = nn.functional.leaky_relu(self.conv1(x), 0.2)
         y = self.conv2(y)
@@ -192,52 +175,41 @@ class ResBlock(nn.Module):
 
 
 class Inter(nn.Module):
-    def __init__(self, input_dim=12800):  # auto-ajusté pour 192x192
+    def __init__(self, input_dim=12800):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, 128)
         self.fc2 = nn.Linear(128, 1152)
         self.unflatten = nn.Unflatten(1, (128, 3, 3))
         self.upsample = Upsample(128, 512)
-
     def forward(self, x):
-        # si besoin, adapter dynamiquement la taille d'entrée
         if x.shape[1] != self.fc1.in_features:
             self.fc1 = nn.Linear(x.shape[1], 128).to(x.device)
-        x = self.fc1(x)
-        x = self.fc2(x)
-        x = self.unflatten(x)
-        x = self.upsample(x)
-        return x
-
+        x = self.fc1(x); x = self.fc2(x); x = self.unflatten(x)
+        return self.upsample(x)
 
 
 class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.decoder = nn.Sequential(
-            Upsample(128, 2048),
-            ResBlock(512),
-            Upsample(512, 1024),
-            ResBlock(256),
-            Upsample(256, 512),
-            ResBlock(128)
+            Upsample(128, 2048), ResBlock(512),
+            Upsample(512, 1024), ResBlock(256),
+            Upsample(256, 512), ResBlock(128)
         )
         self.conv_outs = nn.ModuleList([
-            nn.Conv2d(128, 3, 1, padding='same'),
-            nn.Conv2d(128, 3, 3, padding='same'),
-            nn.Conv2d(128, 3, 3, padding='same'),
-            nn.Conv2d(128, 3, 3, padding='same')
+            nn.Conv2d(128, 3, k, padding='same') for k in [1, 3, 3, 3]
         ])
         self.depth_to_space = DepthToSpace()
-
     def forward(self, x):
         x = self.decoder(x)
         outs = [conv(x) for conv in self.conv_outs]
-        x = torch.concat(outs, 1)
+        x = torch.cat(outs, 1)
         x = self.depth_to_space(x, 2)
         return torch.sigmoid(x)
 
-
+# --------------------------------------------------------------------------
+# ----------------------------- TRAINING LOOP ------------------------------
+# --------------------------------------------------------------------------
 def create_window(size=11, sigma=1.5, channels=1):
     gk1d = torch.tensor(cv2.getGaussianKernel(size, sigma), dtype=torch.float32)
     gk2d = gk1d @ gk1d.t()
@@ -247,13 +219,12 @@ def create_window(size=11, sigma=1.5, channels=1):
 def dssim(image1, image2, window_size=11):
     pad = window_size // 2
     window = create_window(window_size, channels=3).to(device)
-    mu1 = nn.functional.conv2d(image1, window, padding=pad, groups=3)
-    mu2 = nn.functional.conv2d(image2, window, padding=pad, groups=3)
+    mu1, mu2 = nn.functional.conv2d(image1, window, padding=pad, groups=3), nn.functional.conv2d(image2, window, padding=pad, groups=3)
     mu1_sq, mu2_sq, mu12 = mu1**2, mu2**2, mu1*mu2
     sig1_sq = nn.functional.conv2d(image1*image1, window, padding=pad, groups=3) - mu1_sq + 1e-6
     sig2_sq = nn.functional.conv2d(image2*image2, window, padding=pad, groups=3) - mu2_sq + 1e-6
     sig12 = nn.functional.conv2d(image1*image2, window, padding=pad, groups=3) - mu12 + 1e-6
-    C1, C2, C3 = 0.01**2, 0.03**2, (0.03**2)/2
+    C1, C2, C3 = 0.01**2, 0.03**2, 0.03**2/2
     lum = (2*mu12 + C1)/(mu1_sq + mu2_sq + C1)
     con = (2*torch.sqrt(sig1_sq*sig2_sq) + C2)/(sig1_sq + sig2_sq + C2)
     strc = (sig12 + C3)/(torch.sqrt(sig1_sq*sig2_sq) + C3)
@@ -265,75 +236,40 @@ def draw_results(reconstruct_src, target_src, reconstruct_dst, target_dst, fake,
     fig, axes = plt.subplots(figsize=(660 / dpi, 370 / dpi))
     axes.plot(loss_src, label='loss src')
     axes.plot(loss_dst, label='loss dst')
-    axes.legend()
-    axes.set_title(f'press q to quit and save, or r to refresh\nEpoch = {len(loss_src)}')
-
-    canvas = fig.canvas
-    canvas.draw()
+    axes.legend(); axes.set_title(f'press q to quit and save, or r to refresh\nEpoch = {len(loss_src)}')
+    canvas = fig.canvas; canvas.draw()
     width, height = canvas.get_width_height()
-    buffer = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
-    expected = width * height * 3
-
-    if buffer.size != expected:
-        ratio = int((buffer.size / 3) ** 0.5)
-        width = height = ratio
-        print(f"[warning] mismatch in canvas size, auto-adjusting to {width}×{height}")
-
-    image_array = buffer[:width * height * 3].reshape((height, width, 3)) / 255.0
+    buffer = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8).reshape((height, width, 3)) / 255.0
     plt.close(fig)
 
     images_for_grid = []
     for ii in range(min(3, len(reconstruct_src))):
-        images_for_grid.extend([
-            reconstruct_src[ii],
-            target_src[ii],
-            reconstruct_dst[ii],
-            target_dst[ii],
-            fake[ii]
-        ])
+        images_for_grid.extend([reconstruct_src[ii], target_src[ii], reconstruct_dst[ii], target_dst[ii], fake[ii]])
+    im_grid = torchvision.utils.make_grid(images_for_grid, nrow=5, padding=30).permute(1, 2, 0).cpu().numpy()
+    final_image = np.vstack([buffer, im_grid])
+    return np.clip(final_image[..., ::-1] * 255, 0, 255).astype(np.uint8)
 
-    im_grid = torchvision.utils.make_grid(images_for_grid, nrow=5, padding=30)
-    im_grid = im_grid.permute(1, 2, 0).cpu().numpy()
-
-    if image_array.shape[1] != im_grid.shape[1]:
-        target_w = min(image_array.shape[1], im_grid.shape[1])
-        image_array = cv2.resize(image_array, (target_w, image_array.shape[0]))
-        im_grid = cv2.resize(im_grid, (target_w, im_grid.shape[0]))
-
-    final_image = np.vstack([image_array, im_grid])
-    final_image = np.clip(final_image[..., ::-1] * 255, 0, 255).astype(np.uint8)
-    cv2.destroyAllWindows()
-    return final_image
-
-
+# --------------------------------------------------------------------------
+# ----------------------------- TRAIN FUNCTION -----------------------------
+# --------------------------------------------------------------------------
 def train(data_path: str, model_name='Quick96', new_model=False, saved_models_dir='saved_model'):
     saved_models_dir = Path(saved_models_dir)
     lr = 1e-4
     dataset = FaceData(data_path)
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=dataset.collate_fn)
 
-    encoder = Encoder().to(device)
-    inter = Inter().to(device)
-    decoder_src = Decoder().to(device)
-    decoder_dst = Decoder().to(device)
-
-    optim_encoder = torch.optim.Adam(
-        [{"params": encoder.parameters()}, {"params": inter.parameters()}], lr=lr)
+    encoder, inter = Encoder().to(device), Inter().to(device)
+    decoder_src, decoder_dst = Decoder().to(device), Decoder().to(device)
+    optim_encoder = torch.optim.Adam([{"params": encoder.parameters()}, {"params": inter.parameters()}], lr=lr)
     optim_decoder_src = torch.optim.Adam(decoder_src.parameters(), lr=lr)
     optim_decoder_dst = torch.optim.Adam(decoder_dst.parameters(), lr=lr)
     criterion_L2 = nn.MSELoss()
 
-    # Chargement du modèle existant
+    # Load model if available
     if not new_model and (saved_models_dir / f'{model_name}.pth').exists():
         print('Loading previous model...')
         saved_model = torch.load(str(saved_models_dir / f'{model_name}.pth'))
         epoch = saved_model['epoch']
-    else:
-        saved_model, epoch = {}, 0
-        mean_loss_src, mean_loss_dst = [], []
-
-    if saved_model:
-        print('loading model states')
         encoder.load_state_dict(saved_model['encoder'])
         inter.load_state_dict(saved_model['inter'])
         decoder_src.load_state_dict(saved_model['decoder_src'])
@@ -341,90 +277,68 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
         optim_encoder.load_state_dict(saved_model['optimizer_encoder'])
         optim_decoder_src.load_state_dict(saved_model['optimizer_decoder_src'])
         optim_decoder_dst.load_state_dict(saved_model['optimizer_decoder_dst'])
-        mean_loss_src = saved_model['mean_loss_src']
-        mean_loss_dst = saved_model['mean_loss_dst']
+        mean_loss_src, mean_loss_dst = saved_model['mean_loss_src'], saved_model['mean_loss_dst']
+    else:
+        epoch, mean_loss_src, mean_loss_dst = 0, [], []
 
-    encoder.train(), inter.train(), decoder_src.train(), decoder_dst.train()
-
+    encoder.train(); inter.train(); decoder_src.train(); decoder_dst.train()
     print(f"{len(dataloader.dataset)} images, {len(dataloader)} batches.")
-    first_run, run = True, True
 
+    first_run, run = True, True
     try:
         while run:
             epoch += 1
             mean_epoch_loss_src, mean_epoch_loss_dst = [], []
 
-            for ii, (warp_im_src, target_im_src, warp_im_dst, target_im_dst) in enumerate(
-                tqdm(dataloader, desc=f"Epoch {epoch}")
-            ):
+            for warp_im_src, target_im_src, warp_im_dst, target_im_dst in tqdm(dataloader, desc=f"Epoch {epoch}"):
+
                 # --- source ---
                 latent_src = inter(encoder(warp_im_src))
                 reconstruct_im_src = decoder_src(latent_src)
                 loss_src_val = dssim(reconstruct_im_src, target_im_src) + criterion_L2(reconstruct_im_src, target_im_src)
-                optim_encoder.zero_grad()
-                optim_decoder_src.zero_grad()
-                loss_src_val.backward()
-                optim_encoder.step()
-                optim_decoder_src.step()
+                optim_encoder.zero_grad(); optim_decoder_src.zero_grad()
+                loss_src_val.backward(); optim_encoder.step(); optim_decoder_src.step()
 
                 # --- destination ---
                 latent_dst = inter(encoder(warp_im_dst))
                 reconstruct_im_dst = decoder_dst(latent_dst)
                 loss_dst_val = dssim(reconstruct_im_dst, target_im_dst) + criterion_L2(reconstruct_im_dst, target_im_dst)
-                optim_encoder.zero_grad()
-                optim_decoder_dst.zero_grad()
-                loss_dst_val.backward()
-                optim_encoder.step()
-                optim_decoder_dst.step()
+                optim_encoder.zero_grad(); optim_decoder_dst.zero_grad()
+                loss_dst_val.backward(); optim_encoder.step(); optim_decoder_dst.step()
 
                 mean_epoch_loss_src.append(loss_src_val.item())
                 mean_epoch_loss_dst.append(loss_dst_val.item())
 
                 if first_run:
                     first_run = False
-                    plt.ioff()
                     fake = decoder_src(inter(encoder(target_im_dst)))
-                    result_image = draw_results(
-                        reconstruct_im_src, target_im_src, reconstruct_im_dst, target_im_dst, fake,
-                        mean_loss_src, mean_loss_dst
-                    )
-                    cv2.imshow('results', result_image)
-                    cv2.waitKey(1)
+                    result_image = draw_results(reconstruct_im_src, target_im_src, reconstruct_im_dst, target_im_dst, fake, mean_loss_src, mean_loss_dst)
+                    if HAS_DISPLAY:
+                        cv2.imshow('results', result_image); cv2.waitKey(1)
+                    else:
+                        Path("saved_results").mkdir(exist_ok=True)
+                        cv2.imwrite(f"saved_results/epoch_{epoch:04d}.jpg", result_image)
 
-                k = cv2.waitKey(1)
+                k = cv2.waitKey(1) if HAS_DISPLAY else -1
                 if k == ord('q'):
-                    run = False
-                    break
+                    run = False; break
                 elif k == ord('r'):
                     fake = decoder_src(inter(encoder(target_im_dst)))
-                    result_image = draw_results(
-                        reconstruct_im_src, target_im_src, reconstruct_im_dst, target_im_dst, fake,
-                        mean_loss_src, mean_loss_dst
-                    )
-                    cv2.imshow('results', result_image)
-                    cv2.waitKey(1)
+                    result_image = draw_results(reconstruct_im_src, target_im_src, reconstruct_im_dst, target_im_dst, fake, mean_loss_src, mean_loss_dst)
+                    if HAS_DISPLAY:
+                        cv2.imshow('results', result_image); cv2.waitKey(1)
+                    else:
+                        Path("saved_results").mkdir(exist_ok=True)
+                        cv2.imwrite(f"saved_results/epoch_{epoch:04d}.jpg", result_image)
 
             mean_loss_src.append(np.mean(mean_epoch_loss_src))
             mean_loss_dst.append(np.mean(mean_epoch_loss_dst))
 
     except KeyboardInterrupt:
-        print("\n[info] Interruption détectée (Ctrl + C) — sauvegarde du modèle avant de quitter...")
+        print("\n[info] Training interrupted — saving model before exit...")
+
+    finally:
         saved_model = {
             'epoch': epoch,
             'encoder': encoder.state_dict(),
-            'inter': inter.state_dict(),
-            'decoder_src': decoder_src.state_dict(),
-            'decoder_dst': decoder_dst.state_dict(),
-            'optimizer_encoder': optim_encoder.state_dict(),
-            'optimizer_decoder_src': optim_decoder_src.state_dict(),
-            'optimizer_decoder_dst': optim_decoder_dst.state_dict(),
-            'mean_loss_src': mean_loss_src,
-            'mean_loss_dst': mean_loss_dst
-        }
-        saved_models_dir.mkdir(exist_ok=True, parents=True)
-        torch.save(saved_model, str(saved_models_dir / f"{model_name}.pth"))
-        print(f"[saved] Modèle sauvegardé après l’époque {epoch} → {saved_models_dir / (model_name + '.pth')}")
-
-    finally:
-        cv2.destroyAllWindows()
-
+            'inter':
