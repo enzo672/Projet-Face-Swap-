@@ -5,6 +5,7 @@ import time
 from random import choice
 from glob import glob
 from pathlib import Path
+import platform
 import numpy as np
 import cv2
 import torchvision.utils
@@ -22,6 +23,21 @@ plt.style.use('dark_background')
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+# --------------------------------------------------------------------------
+# --- Détection d'environnement graphique (Linux sans écran = pas d'affichage)
+# --------------------------------------------------------------------------
+def can_display():
+    if platform.system() == "Linux":
+        return "DISPLAY" in os.environ and bool(os.environ["DISPLAY"])
+    elif platform.system() in ["Darwin", "Windows"]:
+        return True
+    return False
+
+HAS_DISPLAY = can_display()
+
+# --------------------------------------------------------------------------
+# ------------------------ PARAMÈTRES DE TRANSFORMATION ---------------------
+# --------------------------------------------------------------------------
 random_transform_args = {
     'rotation_range': 10,
     'zoom_range': 0.05,
@@ -85,6 +101,9 @@ def random_warp(image):
     return warped_image, target_image
 
 
+# --------------------------------------------------------------------------
+# ----------------------------- DATASET ------------------------------------
+# --------------------------------------------------------------------------
 class FaceData(Dataset):
     def __init__(self, data_path):
         self.image_files_src = glob(data_path + '/src/aligned/*.jpg')
@@ -111,6 +130,9 @@ class FaceData(Dataset):
         return warp_image_src, target_image_src, warp_image_dst, target_image_dst
 
 
+# --------------------------------------------------------------------------
+# ---------------------------- BLOCS DU MODÈLE -----------------------------
+# --------------------------------------------------------------------------
 def pixel_norm(x, dim=-1):
     return x / torch.sqrt(torch.mean(x ** 2, dim=dim, keepdim=True) + 1e-06)
 
@@ -176,7 +198,7 @@ class ResBlock(nn.Module):
 
 
 class Inter(nn.Module):
-    def __init__(self, input_dim=12800):  # auto-ajusté pour 192x192
+    def __init__(self, input_dim=12800):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, 128)
         self.fc2 = nn.Linear(128, 1152)
@@ -184,7 +206,6 @@ class Inter(nn.Module):
         self.upsample = Upsample(128, 512)
 
     def forward(self, x):
-        # si besoin, adapter dynamiquement la taille d'entrée
         if x.shape[1] != self.fc1.in_features:
             self.fc1 = nn.Linear(x.shape[1], 128).to(x.device)
         x = self.fc1(x)
@@ -192,7 +213,6 @@ class Inter(nn.Module):
         x = self.unflatten(x)
         x = self.upsample(x)
         return x
-
 
 
 class Decoder(nn.Module):
@@ -222,6 +242,9 @@ class Decoder(nn.Module):
         return torch.sigmoid(x)
 
 
+# --------------------------------------------------------------------------
+# ------------------------ DSSIM / VISUALISATION ----------------------------
+# --------------------------------------------------------------------------
 def create_window(size=11, sigma=1.5, channels=1):
     gk1d = torch.tensor(cv2.getGaussianKernel(size, sigma), dtype=torch.float32)
     gk2d = gk1d @ gk1d.t()
@@ -286,10 +309,12 @@ def draw_results(reconstruct_src, target_src, reconstruct_dst, target_dst, fake,
 
     final_image = np.vstack([image_array, im_grid])
     final_image = np.clip(final_image[..., ::-1] * 255, 0, 255).astype(np.uint8)
-    cv2.destroyAllWindows()
     return final_image
 
 
+# --------------------------------------------------------------------------
+# ------------------------------- ENTRAÎNEMENT ------------------------------
+# --------------------------------------------------------------------------
 def train(data_path: str, model_name='Quick96', new_model=False, saved_models_dir='saved_model'):
     saved_models_dir = Path(saved_models_dir)
     lr = 1e-4
@@ -307,7 +332,6 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
     optim_decoder_dst = torch.optim.Adam(decoder_dst.parameters(), lr=lr)
     criterion_L2 = nn.MSELoss()
 
-    # Chargement du modèle existant
     if not new_model and (saved_models_dir / f'{model_name}.pth').exists():
         print('Loading previous model...')
         saved_model = torch.load(str(saved_models_dir / f'{model_name}.pth'))
@@ -341,7 +365,6 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
             for ii, (warp_im_src, target_im_src, warp_im_dst, target_im_dst) in enumerate(
                 tqdm(dataloader, desc=f"Epoch {epoch}")
             ):
-                # --- source ---
                 latent_src = inter(encoder(warp_im_src))
                 reconstruct_im_src = decoder_src(latent_src)
                 loss_src_val = dssim(reconstruct_im_src, target_im_src) + criterion_L2(reconstruct_im_src, target_im_src)
@@ -351,7 +374,6 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
                 optim_encoder.step()
                 optim_decoder_src.step()
 
-                # --- destination ---
                 latent_dst = inter(encoder(warp_im_dst))
                 reconstruct_im_dst = decoder_dst(latent_dst)
                 loss_dst_val = dssim(reconstruct_im_dst, target_im_dst) + criterion_L2(reconstruct_im_dst, target_im_dst)
@@ -372,8 +394,12 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
                         reconstruct_im_src, target_im_src, reconstruct_im_dst, target_im_dst, fake,
                         mean_loss_src, mean_loss_dst
                     )
-                    cv2.imshow('results', result_image)
-                    cv2.waitKey(1)
+                    if HAS_DISPLAY:
+                        cv2.imshow('results', result_image)
+                        cv2.waitKey(1)
+                    else:
+                        Path("saved_results").mkdir(exist_ok=True)
+                        cv2.imwrite(f"saved_results/epoch_{epoch:04d}.jpg", result_image)
 
                 k = cv2.waitKey(1)
                 if k == ord('q'):
@@ -385,8 +411,12 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
                         reconstruct_im_src, target_im_src, reconstruct_im_dst, target_im_dst, fake,
                         mean_loss_src, mean_loss_dst
                     )
-                    cv2.imshow('results', result_image)
-                    cv2.waitKey(1)
+                    if HAS_DISPLAY:
+                        cv2.imshow('results', result_image)
+                        cv2.waitKey(1)
+                    else:
+                        Path("saved_results").mkdir(exist_ok=True)
+                        cv2.imwrite(f"saved_results/epoch_{epoch:04d}_refresh.jpg", result_image)
 
             mean_loss_src.append(np.mean(mean_epoch_loss_src))
             mean_loss_dst.append(np.mean(mean_epoch_loss_dst))
@@ -410,5 +440,5 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
         print(f"[saved] Modèle sauvegardé après l’époque {epoch} → {saved_models_dir / (model_name + '.pth')}")
 
     finally:
-        cv2.destroyAllWindows()
-
+        if HAS_DISPLAY:
+            cv2.destroyAllWindows()
