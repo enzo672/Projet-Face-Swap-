@@ -123,13 +123,19 @@ def pixel_norm(x, dim=-1):
 
 
 def depth_to_space(x, size=2):
+    """Reformate les canaux en espace (inverse de PixelShuffle)."""
     b, c, h, w = x.shape
-    out_h, out_w = size * h, size * w
+    if c % (size * size) != 0:
+        # Correction automatique du nombre de canaux non divisible par 4
+        pad = (size * size) - (c % (size * size))
+        x = torch.nn.functional.pad(x, (0, 0, 0, 0, 0, pad))
+        c += pad
     out_c = c // (size * size)
-    x = x.reshape(b, size, size, out_c, h, w)
-    x = x.permute(0, 3, 4, 1, 5, 2).reshape(b, out_c, out_h, out_w)
-    return x
-
+    out_h = h * size
+    out_w = w * size
+    x = x.view(b, out_c, size, size, h, w)
+    x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
+    return x.view(b, out_c, out_h, out_w)
 
 class DepthToSpace(nn.Module):
     def forward(self, x, size=2):
@@ -158,14 +164,16 @@ class Encoder(nn.Module):
 class Upsample(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.upsample = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, padding='same'),
-            nn.LeakyReLU(0.1, True),
-            DepthToSpace()
-        )
+        # S'assure que le nombre de canaux de sortie soit multiple de 4
+        out_channels = ((out_channels + 3) // 4) * 4
+        self.conv = nn.Conv2d(in_channels, out_channels, 3, padding=1)
+        self.act = nn.LeakyReLU(0.1, inplace=True)
+        self.shuffle = DepthToSpace()
 
     def forward(self, x):
-        return self.upsample(x)
+        x = self.act(self.conv(x))
+        return self.shuffle(x, 2)
+
 
 
 class ResBlock(nn.Module):
