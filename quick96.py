@@ -212,9 +212,9 @@ def dssim(image1, image2, window_size=11, eps=1e-6):
     mu1 = nn.functional.conv2d(image1, window, padding=pad, groups=3)
     mu2 = nn.functional.conv2d(image2, window, padding=pad, groups=3)
     mu1_sq, mu2_sq, mu12 = mu1**2, mu2**2, mu1 * mu2
-    sig1_sq = torch.clamp(nn.functional.conv2d(image1 * image1, window, padding=pad, groups=3) - mu1_sq, min=eps)
-    sig2_sq = torch.clamp(nn.functional.conv2d(image2 * image2, window, padding=pad, groups=3) - mu2_sq, min=eps)
-    sig12 = nn.functional.conv2d(image1 * image2, window, padding=pad, groups=3) - mu12
+    sig1_sq = nn.functional.conv2d(image1*image1, window, padding=pad, groups=3) - mu1_sq + 1e-4
+    sig2_sq = nn.functional.conv2d(image2*image2, window, padding=pad, groups=3) - mu2_sq + 1e-4
+    sig12 = nn.functional.conv2d(image1*image2, window, padding=pad, groups=3) - mu12 + 1e-4
     C1, C2, C3 = 0.01**2, 0.03**2, (0.03**2) / 2
     lum = (2 * mu12 + C1) / (mu1_sq + mu2_sq + C1)
     con = (2 * torch.sqrt(sig1_sq * sig2_sq) + C2) / (sig1_sq + sig2_sq + C2)
