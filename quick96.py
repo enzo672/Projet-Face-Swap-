@@ -257,9 +257,16 @@ def dssim(image1, image2, window_size=11):
     mu1 = nn.functional.conv2d(image1, window, padding=pad, groups=3)
     mu2 = nn.functional.conv2d(image2, window, padding=pad, groups=3)
     mu1_sq, mu2_sq, mu12 = mu1**2, mu2**2, mu1*mu2
-    sig1_sq = nn.functional.conv2d(image1*image1, window, padding=pad, groups=3) - mu1_sq + 1e-6
-    sig2_sq = nn.functional.conv2d(image2*image2, window, padding=pad, groups=3) - mu2_sq + 1e-6
-    sig12 = nn.functional.conv2d(image1*image2, window, padding=pad, groups=3) - mu12 + 1e-6
+    sig1_sq = nn.functional.conv2d(image1*image1, window, padding=pad, groups=3) - mu1_sq
+    sig2_sq = nn.functional.conv2d(image2*image2, window, padding=pad, groups=3) - mu2_sq
+    sig12 = nn.functional.conv2d(image1*image2, window, padding=pad, groups=3) - mu12
+
+    # clamp toutes les variances pour éviter 0 ou NaN
+    eps = 1e-4
+    sig1_sq = torch.clamp(sig1_sq, min=eps)
+    sig2_sq = torch.clamp(sig2_sq, min=eps)
+    sig12 = torch.clamp(sig12, min=-1.0, max=1.0)  # pas trop extrême
+
     C1, C2, C3 = 0.01**2, 0.03**2, (0.03**2)/2
     lum = (2*mu12 + C1)/(mu1_sq + mu2_sq + C1)
     con = (2*torch.sqrt(sig1_sq*sig2_sq) + C2)/(sig1_sq + sig2_sq + C2)
@@ -268,27 +275,40 @@ def dssim(image1, image2, window_size=11):
 
 
 def draw_results(reconstruct_src, target_src, reconstruct_dst, target_dst, fake, loss_src, loss_dst):
+    # Clamp + nan_to_num pour toutes les images
+    reconstruct_src = torch.clamp(torch.nan_to_num(reconstruct_src, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+    reconstruct_dst = torch.clamp(torch.nan_to_num(reconstruct_dst, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+    target_src = torch.clamp(torch.nan_to_num(target_src, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+    target_dst = torch.clamp(torch.nan_to_num(target_dst, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+    fake = torch.clamp(torch.nan_to_num(fake, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+
+    # Convertir en numpy
+    def safe_to_numpy(tensor):
+        arr = tensor.detach().cpu().permute(0, 2, 3, 1).numpy()
+        arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
+        return arr
+
+    reconstruct_src = safe_to_numpy(reconstruct_src)
+    reconstruct_dst = safe_to_numpy(reconstruct_dst)
+    target_src = safe_to_numpy(target_src)
+    target_dst = safe_to_numpy(target_dst)
+    fake = safe_to_numpy(fake)
+
+    # Graphique des losses
     dpi = plt.rcParams['figure.dpi']
     fig, axes = plt.subplots(figsize=(660 / dpi, 370 / dpi))
     axes.plot(loss_src, label='loss src')
     axes.plot(loss_dst, label='loss dst')
     axes.legend()
     axes.set_title(f'press q to quit and save, or r to refresh\nEpoch = {len(loss_src)}')
-
-    canvas = fig.canvas
-    canvas.draw()
-    width, height = canvas.get_width_height()
-    buffer = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
-    expected = width * height * 3
-
-    if buffer.size != expected:
-        ratio = int((buffer.size / 3) ** 0.5)
-        width = height = ratio
-        print(f"[warning] mismatch in canvas size, auto-adjusting to {width}×{height}")
-
-    image_array = buffer[:width * height * 3].reshape((height, width, 3)) / 255.0
+    fig.canvas.draw()
+    width, height = fig.canvas.get_width_height()
+    buffer = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
     plt.close(fig)
 
+    image_array = buffer.reshape((height, width, 3)) / 255.0
+
+    # Grille d’images
     images_for_grid = []
     for ii in range(min(3, len(reconstruct_src))):
         images_for_grid.extend([
@@ -299,22 +319,23 @@ def draw_results(reconstruct_src, target_src, reconstruct_dst, target_dst, fake,
             fake[ii]
         ])
 
-    im_grid = torchvision.utils.make_grid(images_for_grid, nrow=5, padding=30)
-    im_grid = im_grid.permute(1, 2, 0).cpu().numpy()
+    im_grid = torchvision.utils.make_grid(
+        [torch.tensor(img).permute(2,0,1) for img in images_for_grid],
+        nrow=5, padding=30
+    ).permute(1, 2, 0).cpu().numpy()
 
-    if image_array.shape[1] != im_grid.shape[1]:
-        target_w = min(image_array.shape[1], im_grid.shape[1])
-        image_array = cv2.resize(image_array, (target_w, image_array.shape[0]))
-        im_grid = cv2.resize(im_grid, (target_w, im_grid.shape[0]))
+    target_w = min(image_array.shape[1], im_grid.shape[1])
+    image_array = cv2.resize(image_array, (target_w, image_array.shape[0]))
+    im_grid = cv2.resize(im_grid, (target_w, im_grid.shape[0]))
 
     final_image = np.vstack([image_array, im_grid])
     final_image = np.clip(final_image[..., ::-1] * 255, 0, 255).astype(np.uint8)
+
     return final_image
 
 
-# --------------------------------------------------------------------------
+
 # ------------------------------- ENTRAÎNEMENT ------------------------------
-# --------------------------------------------------------------------------
 def train(data_path: str, model_name='Quick96', new_model=False, saved_models_dir='saved_model'):
     saved_models_dir = Path(saved_models_dir)
     lr = 1e-4
@@ -332,6 +353,7 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
     optim_decoder_dst = torch.optim.Adam(decoder_dst.parameters(), lr=lr)
     criterion_L2 = nn.MSELoss()
 
+    # Charger ancien modèle si existant
     if not new_model and (saved_models_dir / f'{model_name}.pth').exists():
         print('Loading previous model...')
         saved_model = torch.load(str(saved_models_dir / f'{model_name}.pth'))
@@ -353,6 +375,7 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
         mean_loss_dst = saved_model['mean_loss_dst']
 
     encoder.train(), inter.train(), decoder_src.train(), decoder_dst.train()
+    torch.autograd.set_detect_anomaly(True)
 
     print(f"{len(dataloader.dataset)} images, {len(dataloader)} batches.")
     first_run, run = True, True
@@ -365,31 +388,46 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
             for ii, (warp_im_src, target_im_src, warp_im_dst, target_im_dst) in enumerate(
                 tqdm(dataloader, desc=f"Epoch {epoch}")
             ):
+                # ------------------ SRC ------------------
                 latent_src = inter(encoder(warp_im_src))
                 reconstruct_im_src = decoder_src(latent_src)
+                reconstruct_im_src = torch.clamp(torch.nan_to_num(reconstruct_im_src, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+
                 loss_src_val = dssim(reconstruct_im_src, target_im_src) + criterion_L2(reconstruct_im_src, target_im_src)
                 optim_encoder.zero_grad()
                 optim_decoder_src.zero_grad()
                 loss_src_val.backward()
+                torch.nn.utils.clip_grad_norm_(encoder.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(inter.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(decoder_src.parameters(), max_norm=1.0)
                 optim_encoder.step()
                 optim_decoder_src.step()
 
+                # ------------------ DST ------------------
                 latent_dst = inter(encoder(warp_im_dst))
                 reconstruct_im_dst = decoder_dst(latent_dst)
+                reconstruct_im_dst = torch.clamp(torch.nan_to_num(reconstruct_im_dst, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+
                 loss_dst_val = dssim(reconstruct_im_dst, target_im_dst) + criterion_L2(reconstruct_im_dst, target_im_dst)
                 optim_encoder.zero_grad()
                 optim_decoder_dst.zero_grad()
                 loss_dst_val.backward()
+                torch.nn.utils.clip_grad_norm_(encoder.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(inter.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(decoder_dst.parameters(), max_norm=1.0)
                 optim_encoder.step()
                 optim_decoder_dst.step()
 
                 mean_epoch_loss_src.append(loss_src_val.item())
                 mean_epoch_loss_dst.append(loss_dst_val.item())
 
+                # ------------------ Affichage ------------------
                 if first_run:
                     first_run = False
                     plt.ioff()
                     fake = decoder_src(inter(encoder(target_im_dst)))
+                    fake = torch.clamp(torch.nan_to_num(fake, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+
                     result_image = draw_results(
                         reconstruct_im_src, target_im_src, reconstruct_im_dst, target_im_dst, fake,
                         mean_loss_src, mean_loss_dst
@@ -406,11 +444,17 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
                     run = False
                     break
                 elif k == ord('r'):
+                    # recalcul et clamp du fake
                     fake = decoder_src(inter(encoder(target_im_dst)))
+                    fake = torch.clamp(torch.nan_to_num(fake, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+                    stable_reconstruct_src = torch.clamp(torch.nan_to_num(reconstruct_im_src, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+                    stable_reconstruct_dst = torch.clamp(torch.nan_to_num(reconstruct_im_dst, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
+
                     result_image = draw_results(
-                        reconstruct_im_src, target_im_src, reconstruct_im_dst, target_im_dst, fake,
+                        stable_reconstruct_src, target_im_src, stable_reconstruct_dst, target_im_dst, fake,
                         mean_loss_src, mean_loss_dst
                     )
+
                     if HAS_DISPLAY:
                         cv2.imshow('results', result_image)
                         cv2.waitKey(1)
@@ -422,7 +466,7 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
             mean_loss_dst.append(np.mean(mean_epoch_loss_dst))
 
     except KeyboardInterrupt:
-        print("\n[info] Interruption détectée (Ctrl + C) — sauvegarde du modèle avant de quitter...")
+        print("\n[info] Interruption détectée — sauvegarde du modèle...")
         saved_model = {
             'epoch': epoch,
             'encoder': encoder.state_dict(),
@@ -437,7 +481,7 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
         }
         saved_models_dir.mkdir(exist_ok=True, parents=True)
         torch.save(saved_model, str(saved_models_dir / f"{model_name}.pth"))
-        print(f"[saved] Modèle sauvegardé après l’époque {epoch} → {saved_models_dir / (model_name + '.pth')}")
+        print(f"[saved] Modèle sauvegardé → {saved_models_dir / (model_name + '.pth')}")
 
     finally:
         if HAS_DISPLAY:
