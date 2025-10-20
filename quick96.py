@@ -101,26 +101,26 @@ class FaceData(Dataset):
         return min(len(self.image_files_src), len(self.image_files_dst))
 
     def __getitem__(self, inx):
-    image_file_src = choice(self.image_files_src)
-    image_file_dst = choice(self.image_files_dst)
+        image_file_src = choice(self.image_files_src)
+        image_file_dst = choice(self.image_files_dst)
 
-    # Lecture, redimensionnement, normalisation
-    image_src = np.asarray(Image.open(image_file_src).convert('RGB').resize((192, 192)), dtype=np.float32) / 255.
-    image_dst = np.asarray(Image.open(image_file_dst).convert('RGB').resize((192, 192)), dtype=np.float32) / 255.
+        # Lecture, redimensionnement, normalisation
+        image_src = np.asarray(Image.open(image_file_src).convert('RGB').resize((192, 192)), dtype=np.float32) / 255.
+        image_dst = np.asarray(Image.open(image_file_dst).convert('RGB').resize((192, 192)), dtype=np.float32) / 255.
 
-    # Nettoyage des valeurs anormales
-    image_src = np.nan_to_num(np.clip(image_src, 0, 1))
-    image_dst = np.nan_to_num(np.clip(image_dst, 0, 1))
+        # Nettoyage des valeurs anormales
+        image_src = np.nan_to_num(np.clip(image_src, 0, 1))
+        image_dst = np.nan_to_num(np.clip(image_dst, 0, 1))
 
-    # Vérification de cohérence (évite crash si image vide ou saturée)
-    if not np.isfinite(image_src).all():
-        print(f"[warn] Image src invalide: {image_file_src}")
-        image_src = np.zeros((192, 192, 3), dtype=np.float32)
-    if not np.isfinite(image_dst).all():
-        print(f"[warn] Image dst invalide: {image_file_dst}")
-        image_dst = np.zeros((192, 192, 3), dtype=np.float32)
+        # Vérification de cohérence (évite crash si image vide ou saturée)
+        if not np.isfinite(image_src).all():
+            print(f"[warn] Image src invalide: {image_file_src}")
+            image_src = np.zeros((192, 192, 3), dtype=np.float32)
+        if not np.isfinite(image_dst).all():
+            print(f"[warn] Image dst invalide: {image_file_dst}")
+            image_dst = np.zeros((192, 192, 3), dtype=np.float32)
 
-    return image_src, image_dst
+        return image_src, image_dst
 
 
     def collate_fn(self, batch):
