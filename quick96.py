@@ -1,6 +1,4 @@
-import sys
 import os
-import datetime
 import time
 from random import choice
 from glob import glob
@@ -11,32 +9,21 @@ import torchvision.utils
 from PIL import Image
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from torchvision import transforms
-
 import platform
-import os
+
 
 def can_display():
-    """Detecte si on peut utiliser cv2.imshow (environnement graphique présent)"""
     if platform.system() == "Linux":
         return "DISPLAY" in os.environ and bool(os.environ["DISPLAY"])
-    elif platform.system() == "Darwin":  # macOS
-        return True
-    elif platform.system() == "Windows":
-        return True
-    return False
+    return True
 
 HAS_DISPLAY = can_display()
-
-
 plt.style.use('dark_background')
-
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 
 random_transform_args = {
     'rotation_range': 10,
@@ -47,392 +34,230 @@ random_transform_args = {
 
 def get_training_data(images, batch_size):
     indices = np.random.randint(len(images), size=batch_size)
-    for i, index in enumerate(indices):
-        image = images[index]
-        image = random_transform(image, **random_transform_args)
-        warped_img, target_img = random_warp(image)
-
-        if i == 0:
-            warped_images = np.empty((batch_size,) + warped_img.shape, warped_img.dtype)
-            target_images = np.empty((batch_size,) + target_img.shape, warped_img.dtype)
-
-        warped_images[i] = warped_img
-        target_images[i] = target_img
-
-    return warped_images, target_images
-
+    warped_images, target_images = [], []
+    for idx in indices:
+        img = random_transform(images[idx], **random_transform_args)
+        w, t = random_warp(img)
+        warped_images.append(w)
+        target_images.append(t)
+    return np.array(warped_images), np.array(target_images)
 
 def random_transform(image, rotation_range, zoom_range, shift_range, random_flip):
-    h, w = image.shape[0:2]
-    rotation = np.random.uniform(-rotation_range, rotation_range)
+    h, w = image.shape[:2]
+    rot = np.random.uniform(-rotation_range, rotation_range)
     scale = np.random.uniform(1 - zoom_range, 1 + zoom_range)
     tx = np.random.uniform(-shift_range, shift_range) * w
     ty = np.random.uniform(-shift_range, shift_range) * h
-    mat = cv2.getRotationMatrix2D((w // 2, h // 2), rotation, scale)
+    mat = cv2.getRotationMatrix2D((w//2, h//2), rot, scale)
     mat[:, 2] += (tx, ty)
-    result = cv2.warpAffine(image, mat, (w, h), borderMode=cv2.BORDER_REPLICATE)
-    if np.random.random() < random_flip:
+    result = cv2.warpAffine(image, mat, (w, h), borderMode=cv2.BORDER_REFLECT)
+    if np.random.rand() < random_flip:
         result = result[:, ::-1]
     return result
 
-
 def random_warp(image):
     h, w = image.shape[:2]
-    range_ = np.linspace(h / 2 - h * 0.4, h / 2 + h * 0.4, 5)
-    mapx = np.broadcast_to(range_, (5, 5))
+    range_ = np.linspace(h/2 - h*0.4, h/2 + h*0.4, 5)
+    mapx = np.broadcast_to(range_, (5,5))
     mapy = mapx.T
-    mapx = mapx + np.random.normal(size=(5, 5), scale=5*h/256)
-    mapy = mapy + np.random.normal(size=(5, 5), scale=5*h/256)
-    interp_mapx = cv2.resize(mapx, (int(w / 2 * 1.25), int(h / 2 * 1.25)))[int(w/16):int(w*7/16), int(w/16):int(w*7/16)].astype('float32')
-    interp_mapy = cv2.resize(mapy, (int(w / 2 * 1.25), int(h / 2 * 1.25)))[int(w/16):int(w*7/16), int(w/16):int(w*7/16)].astype('float32')
-    warped_image = cv2.remap(image, interp_mapx, interp_mapy, cv2.INTER_LINEAR)
-    src_points = np.stack([mapx.ravel(), mapy.ravel()], axis=-1)
-    dst_points = np.mgrid[0:w//2+1:w//8, 0:h//2+1:h//8].T.reshape(-1, 2)
-    A = np.zeros((2 * src_points.shape[0], 2))
-    A[0::2, :] = src_points
-    A[0::2, 1] = -A[0::2, 1]
-    A[1::2, :] = src_points[:, ::-1]
-    A = np.hstack((A, np.tile(np.eye(2), (src_points.shape[0], 1))))
-    b = dst_points.flatten()
-    similarity_mat = np.linalg.lstsq(A, b, rcond=None)[0]
-    similarity_mat = np.array([[similarity_mat[0], -similarity_mat[1], similarity_mat[2]],
-                               [similarity_mat[1], similarity_mat[0], similarity_mat[3]]])
-    target_image = cv2.warpAffine(image, similarity_mat, (w // 2, h // 2))
-    return warped_image, target_image
+    mapx += np.random.normal(size=(5,5), scale=2*h/256)
+    mapy += np.random.normal(size=(5,5), scale=2*h/256)
+    interp_mapx = cv2.resize(mapx, (w//2, h//2)).astype('float32')
+    interp_mapy = cv2.resize(mapy, (w//2, h//2)).astype('float32')
+    warped = cv2.remap(image, interp_mapx, interp_mapy, cv2.INTER_LINEAR)
+    target = cv2.resize(image, (w//2, h//2))
+    return np.clip(warped, 0, 1), np.clip(target, 0, 1)
 
 
 class FaceData(Dataset):
     def __init__(self, data_path):
-        self.image_files_src = glob(data_path + '/src/aligned/*.jpg')
-        self.image_files_dst = glob(data_path + '/dst/aligned/*.jpg')
+        self.src = glob(f"{data_path}/src/aligned/*.jpg")
+        self.dst = glob(f"{data_path}/dst/aligned/*.jpg")
 
     def __len__(self):
-        return min(len(self.image_files_src), len(self.image_files_dst))
+        return min(len(self.src), len(self.dst))
 
-    def __getitem__(self, inx):
-        image_file_src = choice(self.image_files_src)
-        image_file_dst = choice(self.image_files_dst)
-        image_src = np.asarray(Image.open(image_file_src).resize((192, 192))) / 255.
-        image_dst = np.asarray(Image.open(image_file_dst).resize((192, 192))) / 255.
-        return image_src, image_dst
+    def __getitem__(self, idx):
+        s = np.asarray(Image.open(choice(self.src)).resize((192,192))) / 255.
+        d = np.asarray(Image.open(choice(self.dst)).resize((192,192))) / 255.
+        return s, d
 
     def collate_fn(self, batch):
-        images_src, images_dst = list(zip(*batch))
-        warp_image_src, target_image_src = get_training_data(images_src, len(images_src))
-        warp_image_src = torch.tensor(warp_image_src, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
-        target_image_src = torch.tensor(target_image_src, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
-        warp_image_dst, target_image_dst = get_training_data(images_dst, len(images_dst))
-        warp_image_dst = torch.tensor(warp_image_dst, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
-        target_image_dst = torch.tensor(target_image_dst, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
-        return warp_image_src, target_image_src, warp_image_dst, target_image_dst
+        s, d = zip(*batch)
+        ws, ts = get_training_data(s, len(s))
+        wd, td = get_training_data(d, len(d))
+        to_tensor = lambda x: torch.tensor(x, dtype=torch.float32).permute(0,3,1,2).to(device)
+        return to_tensor(ws), to_tensor(ts), to_tensor(wd), to_tensor(td)
 
 
 def pixel_norm(x, dim=-1):
-    return x / torch.sqrt(torch.mean(x ** 2, dim=dim, keepdim=True) + 1e-06)
-
+    return x / torch.sqrt(torch.mean(x**2, dim=dim, keepdim=True) + 1e-6)
 
 def depth_to_space(x, size=2):
     b, c, h, w = x.shape
-    out_h = size * h
-    out_w = size * w
-    out_c = c // (size * size)
-    x = x.reshape((-1, size, size, out_c, h, w))
-    x = x.permute((0, 3, 4, 1, 5, 2))
-    x = x.reshape((-1, out_c, out_h, out_w))
+    o_c = c // (size*size)
+    x = x.reshape(b, size, size, o_c, h, w)
+    x = x.permute(0,3,4,1,5,2).reshape(b, o_c, h*size, w*size)
     return x
 
-
 class DepthToSpace(nn.Module):
-    def forward(self, x, size=2):
-        return depth_to_space(x, size)
-
+    def forward(self, x, size=2): return depth_to_space(x, size)
 
 class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Conv2d(3, 64, 5, stride=2, padding=2),
-            nn.LeakyReLU(0.1, True),
-            nn.Conv2d(64, 128, 5, stride=2, padding=2),
-            nn.LeakyReLU(0.1, True),
-            nn.Conv2d(128, 256, 5, stride=2, padding=2),
-            nn.LeakyReLU(0.1, True),
-            nn.Conv2d(256, 512, 5, stride=2, padding=2),
-            nn.LeakyReLU(0.1, True),
-            nn.Flatten(),
+        self.model = nn.Sequential(
+            nn.Conv2d(3,64,5,2,2), nn.LeakyReLU(0.1),
+            nn.Conv2d(64,128,5,2,2), nn.LeakyReLU(0.1),
+            nn.Conv2d(128,256,5,2,2), nn.LeakyReLU(0.1),
+            nn.Conv2d(256,512,5,2,2), nn.LeakyReLU(0.1),
+            nn.Flatten()
         )
-
-    def forward(self, x):
-        return pixel_norm(self.encoder(x), dim=-1)
-
+    def forward(self,x): return pixel_norm(self.model(x))
 
 class Upsample(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.upsample = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, 3, padding='same'),
-            nn.LeakyReLU(0.1, True),
-            DepthToSpace()
-        )
-
-    def forward(self, x):
-        return self.upsample(x)
-
+    def __init__(self, i, o): super().__init__()
+    def forward(self,x): return DepthToSpace()(x)
 
 class ResBlock(nn.Module):
-    def __init__(self, in_channels):
+    def __init__(self,c):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, in_channels, 3, padding='same')
-        self.conv2 = nn.Conv2d(in_channels, in_channels, 3, padding='same')
-
-    def forward(self, x):
-        y = nn.functional.leaky_relu(self.conv1(x), 0.2)
-        y = self.conv2(y)
-        return nn.functional.leaky_relu(y + x, 0.2)
-
+        self.c1, self.c2 = nn.Conv2d(c,c,3,1,1), nn.Conv2d(c,c,3,1,1)
+    def forward(self,x):
+        y = nn.functional.leaky_relu(self.c1(x),0.2)
+        return nn.functional.leaky_relu(self.c2(y)+x,0.2)
 
 class Inter(nn.Module):
-    def __init__(self, input_dim=12800):  # auto-ajusté pour 192x192
+    def __init__(self,dim=12800):
         super().__init__()
-        self.fc1 = nn.Linear(input_dim, 128)
-        self.fc2 = nn.Linear(128, 1152)
-        self.unflatten = nn.Unflatten(1, (128, 3, 3))
-        self.upsample = Upsample(128, 512)
-
-    def forward(self, x):
-        # si besoin, adapter dynamiquement la taille d'entrée
-        if x.shape[1] != self.fc1.in_features:
-            self.fc1 = nn.Linear(x.shape[1], 128).to(x.device)
-        x = self.fc1(x)
-        x = self.fc2(x)
-        x = self.unflatten(x)
-        x = self.upsample(x)
-        return x
-
-
+        self.fc1, self.fc2 = nn.Linear(dim,128), nn.Linear(128,1152)
+        self.unflatten = nn.Unflatten(1,(128,3,3))
+    def forward(self,x):
+        if x.shape[1]!=self.fc1.in_features:
+            self.fc1 = nn.Linear(x.shape[1],128).to(x.device)
+        x=self.fc2(torch.relu(self.fc1(x)))
+        return DepthToSpace()(self.unflatten(x))
 
 class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
-        self.decoder = nn.Sequential(
-            Upsample(128, 2048),
-            ResBlock(512),
-            Upsample(512, 1024),
-            ResBlock(256),
-            Upsample(256, 512),
-            ResBlock(128)
+        self.seq = nn.Sequential(
+            ResBlock(128),
+            nn.Conv2d(128,128,3,1,1),
+            nn.LeakyReLU(0.1)
         )
-        self.conv_outs = nn.ModuleList([
-            nn.Conv2d(128, 3, 1, padding='same'),
-            nn.Conv2d(128, 3, 3, padding='same'),
-            nn.Conv2d(128, 3, 3, padding='same'),
-            nn.Conv2d(128, 3, 3, padding='same')
-        ])
-        self.depth_to_space = DepthToSpace()
-
-    def forward(self, x):
-        x = self.decoder(x)
-        outs = [conv(x) for conv in self.conv_outs]
-        x = torch.concat(outs, 1)
-        x = self.depth_to_space(x, 2)
-        return torch.sigmoid(x)
+        self.out = nn.Conv2d(128,3,3,1,1)
+    def forward(self,x): return torch.sigmoid(self.out(self.seq(x)))
 
 
-def create_window(size=11, sigma=1.5, channels=1):
-    gk1d = torch.tensor(cv2.getGaussianKernel(size, sigma), dtype=torch.float32)
-    gk2d = gk1d @ gk1d.t()
-    return gk2d.expand((channels, 1, size, size)).contiguous().clone()
+def create_window(size=11,sigma=1.5,channels=1):
+    g=cv2.getGaussianKernel(size,sigma)
+    gk=torch.tensor(g@ g.T,dtype=torch.float32)
+    return gk.expand(channels,1,size,size).clone()
 
+def dssim(i1,i2,window_size=11,eps=1e-6):
+    pad=window_size//2
+    w=create_window(window_size,channels=3).to(device)
+    m1,m2=torch.conv2d(i1,w,padding=pad,groups=3),torch.conv2d(i2,w,padding=pad,groups=3)
+    s1=torch.clamp(torch.conv2d(i1*i1,w,padding=pad,groups=3)-m1**2,min=0)
+    s2=torch.clamp(torch.conv2d(i2*i2,w,padding=pad,groups=3)-m2**2,min=0)
+    s12=torch.conv2d(i1*i2,w,padding=pad,groups=3)-m1*m2
+    C1,C2=0.01**2,0.03**2
+    ssim=((2*m1*m2+C1)*(2*s12+C2))/((m1**2+m2**2+C1)*(s1+s2+C2)+eps)
+    return 1-torch.clamp(ssim.mean(),0,1)
 
-def dssim(image1, image2, window_size=11):
-    pad = window_size // 2
-    window = create_window(window_size, channels=3).to(device)
-    mu1 = nn.functional.conv2d(image1, window, padding=pad, groups=3)
-    mu2 = nn.functional.conv2d(image2, window, padding=pad, groups=3)
-    mu1_sq, mu2_sq, mu12 = mu1**2, mu2**2, mu1*mu2
-    sig1_sq = nn.functional.conv2d(image1*image1, window, padding=pad, groups=3) - mu1_sq + 1e-6
-    sig2_sq = nn.functional.conv2d(image2*image2, window, padding=pad, groups=3) - mu2_sq + 1e-6
-    sig12 = nn.functional.conv2d(image1*image2, window, padding=pad, groups=3) - mu12 + 1e-6
-    C1, C2, C3 = 0.01**2, 0.03**2, (0.03**2)/2
-    lum = (2*mu12 + C1)/(mu1_sq + mu2_sq + C1)
-    con = (2*torch.sqrt(sig1_sq*sig2_sq) + C2)/(sig1_sq + sig2_sq + C2)
-    strc = (sig12 + C3)/(torch.sqrt(sig1_sq*sig2_sq) + C3)
-    return (1 - (lum*con*strc).mean()) / 2
-
-
-def draw_results(reconstruct_src, target_src, reconstruct_dst, target_dst, fake, loss_src, loss_dst):
-    dpi = plt.rcParams['figure.dpi']
-    fig, axes = plt.subplots(figsize=(660 / dpi, 370 / dpi))
-    axes.plot(loss_src, label='loss src')
-    axes.plot(loss_dst, label='loss dst')
-    axes.legend()
-    axes.set_title(f'press q to quit and save, or r to refresh\nEpoch = {len(loss_src)}')
-
-    canvas = fig.canvas
-    canvas.draw()
-    width, height = canvas.get_width_height()
-    buffer = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8)
-    expected = width * height * 3
-
-    if buffer.size != expected:
-        ratio = int((buffer.size / 3) ** 0.5)
-        width = height = ratio
-        print(f"[warning] mismatch in canvas size, auto-adjusting to {width}×{height}")
-
-    image_array = buffer[:width * height * 3].reshape((height, width, 3)) / 255.0
+#affichage 
+def draw_results(src,t_src,dst,t_dst,fake,ls,ld):
+    dpi=plt.rcParams['figure.dpi']
+    fig,ax=plt.subplots(figsize=(660/dpi,370/dpi))
+    ax.plot(ls,label='src'); ax.plot(ld,label='dst'); ax.legend()
+    ax.set_title(f"Epoch {len(ls)}"); fig.canvas.draw()
+    buf=np.frombuffer(fig.canvas.tostring_rgb(),dtype=np.uint8)
+    img=buf.reshape(fig.canvas.get_width_height()[::-1]+(3,))/255.0
     plt.close(fig)
+    grid=torchvision.utils.make_grid(
+        [src[0],t_src[0],dst[0],t_dst[0],fake[0]],nrow=5,padding=10
+    ).permute(1,2,0).cpu().numpy()
+    grid=np.clip(grid,0,1)
+    return np.vstack([img,grid])
 
-    images_for_grid = []
-    for ii in range(min(3, len(reconstruct_src))):
-        images_for_grid.extend([
-            reconstruct_src[ii],
-            target_src[ii],
-            reconstruct_dst[ii],
-            target_dst[ii],
-            fake[ii]
-        ])
+#entrainement 
+def train(data_path,model_name='Quick96',new_model=False,saved_models_dir='saved_model'):
+    lr=5e-5; saved=Path(saved_models_dir)
+    ds=FaceData(data_path)
+    dl=DataLoader(ds,batch_size=16,shuffle=True,collate_fn=ds.collate_fn)
+    enc,inter,dec_s,dec_d=Encoder().to(device),Inter().to(device),Decoder().to(device),Decoder().to(device)
+    opt_e=torch.optim.Adam(list(enc.parameters())+list(inter.parameters()),lr=lr)
+    opt_s=torch.optim.Adam(dec_s.parameters(),lr=lr)
+    opt_d=torch.optim.Adam(dec_d.parameters(),lr=lr)
+    mse=nn.MSELoss()
 
-    im_grid = torchvision.utils.make_grid(images_for_grid, nrow=5, padding=30)
-    im_grid = im_grid.permute(1, 2, 0).cpu().numpy()
-
-    if image_array.shape[1] != im_grid.shape[1]:
-        target_w = min(image_array.shape[1], im_grid.shape[1])
-        image_array = cv2.resize(image_array, (target_w, image_array.shape[0]))
-        im_grid = cv2.resize(im_grid, (target_w, im_grid.shape[0]))
-
-    final_image = np.vstack([image_array, im_grid])
-    final_image = np.clip(final_image[..., ::-1] * 255, 0, 255).astype(np.uint8)
-    cv2.destroyAllWindows()
-    return final_image
-
-
-def train(data_path: str, model_name='Quick96', new_model=False, saved_models_dir='saved_model'):
-    saved_models_dir = Path(saved_models_dir)
-    lr = 1e-4
-    dataset = FaceData(data_path)
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=dataset.collate_fn)
-
-    encoder = Encoder().to(device)
-    inter = Inter().to(device)
-    decoder_src = Decoder().to(device)
-    decoder_dst = Decoder().to(device)
-
-    optim_encoder = torch.optim.Adam(
-        [{"params": encoder.parameters()}, {"params": inter.parameters()}], lr=lr)
-    optim_decoder_src = torch.optim.Adam(decoder_src.parameters(), lr=lr)
-    optim_decoder_dst = torch.optim.Adam(decoder_dst.parameters(), lr=lr)
-    criterion_L2 = nn.MSELoss()
-
-    # Chargement du modèle existant
-    if not new_model and (saved_models_dir / f'{model_name}.pth').exists():
-        print('Loading previous model...')
-        saved_model = torch.load(str(saved_models_dir / f'{model_name}.pth'))
-        epoch = saved_model['epoch']
-    else:
-        saved_model, epoch = {}, 0
-        mean_loss_src, mean_loss_dst = [], []
-
-    if saved_model:
-        print('loading model states')
-        encoder.load_state_dict(saved_model['encoder'])
-        inter.load_state_dict(saved_model['inter'])
-        decoder_src.load_state_dict(saved_model['decoder_src'])
-        decoder_dst.load_state_dict(saved_model['decoder_dst'])
-        optim_encoder.load_state_dict(saved_model['optimizer_encoder'])
-        optim_decoder_src.load_state_dict(saved_model['optimizer_decoder_src'])
-        optim_decoder_dst.load_state_dict(saved_model['optimizer_decoder_dst'])
-        mean_loss_src = saved_model['mean_loss_src']
-        mean_loss_dst = saved_model['mean_loss_dst']
-
-    encoder.train(), inter.train(), decoder_src.train(), decoder_dst.train()
-
-    print(f"{len(dataloader.dataset)} images, {len(dataloader)} batches.")
-    first_run, run = True, True
+    epoch,ls,ld=0,[],[]
+    model_file=saved/f"{model_name}.pth"
+    if model_file.exists() and not new_model:
+        ckpt=torch.load(model_file,map_location=device)
+        enc.load_state_dict(ckpt['encoder']); inter.load_state_dict(ckpt['inter'])
+        dec_s.load_state_dict(ckpt['decoder_src']); dec_d.load_state_dict(ckpt['decoder_dst'])
+        opt_e.load_state_dict(ckpt['optimizer_encoder'])
+        opt_s.load_state_dict(ckpt['optimizer_decoder_src'])
+        opt_d.load_state_dict(ckpt['optimizer_decoder_dst'])
+        ls,ld=ckpt['mean_loss_src'],ckpt['mean_loss_dst']
+        epoch=ckpt['epoch']
 
     try:
-        while run:
-            epoch += 1
-            mean_epoch_loss_src, mean_epoch_loss_dst = [], []
+        while True:
+            epoch+=1
+            e_ls,e_ld=[],[]
+            for ws,ts,wd,td in tqdm(dl,desc=f"Epoch {epoch}"):
+                # Source
+                r_s=torch.clamp(dec_s(inter(enc(ws))),0,1)
+                loss_s=0.8*mse(r_s,ts)+0.2*dssim(r_s,ts)
+                opt_e.zero_grad(); opt_s.zero_grad()
+                loss_s.backward()
+                torch.nn.utils.clip_grad_norm_(enc.parameters(),1.0)
+                opt_e.step(); opt_s.step()
 
-            for ii, (warp_im_src, target_im_src, warp_im_dst, target_im_dst) in enumerate(
-                tqdm(dataloader, desc=f"Epoch {epoch}")
-            ):
-                # --- source ---
-                latent_src = inter(encoder(warp_im_src))
-                reconstruct_im_src = decoder_src(latent_src)
-                loss_src_val = dssim(reconstruct_im_src, target_im_src) + criterion_L2(reconstruct_im_src, target_im_src)
-                optim_encoder.zero_grad()
-                optim_decoder_src.zero_grad()
-                loss_src_val.backward()
-                optim_encoder.step()
-                optim_decoder_src.step()
+                # Dest
+                r_d=torch.clamp(dec_d(inter(enc(wd))),0,1)
+                loss_d=0.8*mse(r_d,td)+0.2*dssim(r_d,td)
+                opt_e.zero_grad(); opt_d.zero_grad()
+                loss_d.backward()
+                torch.nn.utils.clip_grad_norm_(enc.parameters(),1.0)
+                opt_e.step(); opt_d.step()
 
-                # --- destination ---
-                latent_dst = inter(encoder(warp_im_dst))
-                reconstruct_im_dst = decoder_dst(latent_dst)
-                loss_dst_val = dssim(reconstruct_im_dst, target_im_dst) + criterion_L2(reconstruct_im_dst, target_im_dst)
-                optim_encoder.zero_grad()
-                optim_decoder_dst.zero_grad()
-                loss_dst_val.backward()
-                optim_encoder.step()
-                optim_decoder_dst.step()
+                e_ls.append(loss_s.item()); e_ld.append(loss_d.item())
 
-                mean_epoch_loss_src.append(loss_src_val.item())
-                mean_epoch_loss_dst.append(loss_dst_val.item())
+            ls.append(np.mean(e_ls)); ld.append(np.mean(e_ld))
+            print(f"Epoch {epoch} | Lsrc={ls[-1]:.4f}, Ldst={ld[-1]:.4f}")
 
-                if first_run:
-                    first_run = False
-                    plt.ioff()
-                    fake = decoder_src(inter(encoder(target_im_dst)))
-                    result_image = draw_results(
-                        reconstruct_im_src, target_im_src, reconstruct_im_dst, target_im_dst, fake,
-                        mean_loss_src, mean_loss_dst
-                    )
-                    cv2.imshow('results', result_image)
-                    cv2.waitKey(1)
+            # Affichage
+            fake=dec_s(inter(enc(td)))
+            res=draw_results(r_s,ts,r_d,td,fake,ls,ld)
+            if HAS_DISPLAY:
+                cv2.imshow('results',res); cv2.waitKey(1)
+            else:
+                Path("saved_results").mkdir(exist_ok=True)
+                cv2.imwrite(f"saved_results/epoch_{epoch:04d}.jpg",(res*255).astype(np.uint8))
 
-                k = cv2.waitKey(1)
-                if k == ord('q'):
-                    run = False
-                    break
-                elif k == ord('r'):
-                    time.sleep(0.2)
-                    try:
-                        fake = decoder_src(inter(encoder(target_im_dst)))
-                        result_image = draw_results(
-                            reconstruct_im_src, target_im_src, reconstruct_im_dst, target_im_dst, fake,
-                            mean_loss_src, mean_loss_dst
-                        )
-                        if HAS_DISPLAY:
-                            cv2.imshow('results', result_image)
-                            cv2.waitKey(1)
-                        else:
-                            Path("saved_results").mkdir(exist_ok=True)
-                            cv2.imwrite(f"saved_results/epoch_{epoch:04d}_refresh.jpg", result_image)
-                    except Exception as e:
-                        print(f"[warning] Refresh skipped: {e}")
-
-            mean_loss_src.append(np.mean(mean_epoch_loss_src))
-            mean_loss_dst.append(np.mean(mean_epoch_loss_dst))
+            # Sauvegarde toutes les 10 époques
+            if epoch%10==0:
+                ckpt={
+                    'epoch':epoch,'encoder':enc.state_dict(),'inter':inter.state_dict(),
+                    'decoder_src':dec_s.state_dict(),'decoder_dst':dec_d.state_dict(),
+                    'optimizer_encoder':opt_e.state_dict(),'optimizer_decoder_src':opt_s.state_dict(),
+                    'optimizer_decoder_dst':opt_d.state_dict(),'mean_loss_src':ls,'mean_loss_dst':ld
+                }
+                saved.mkdir(exist_ok=True,parents=True)
+                torch.save(ckpt,model_file)
+                print(f"[saved] epoch {epoch}")
 
     except KeyboardInterrupt:
-        print("\n[info] Interruption détectée (Ctrl + C) — sauvegarde du modèle avant de quitter...")
-        saved_model = {
-            'epoch': epoch,
-            'encoder': encoder.state_dict(),
-            'inter': inter.state_dict(),
-            'decoder_src': decoder_src.state_dict(),
-            'decoder_dst': decoder_dst.state_dict(),
-            'optimizer_encoder': optim_encoder.state_dict(),
-            'optimizer_decoder_src': optim_decoder_src.state_dict(),
-            'optimizer_decoder_dst': optim_decoder_dst.state_dict(),
-            'mean_loss_src': mean_loss_src,
-            'mean_loss_dst': mean_loss_dst
-        }
-        saved_models_dir.mkdir(exist_ok=True, parents=True)
-        torch.save(saved_model, str(saved_models_dir / f"{model_name}.pth"))
-        print(f"[saved] Modèle sauvegardé après l’époque {epoch} → {saved_models_dir / (model_name + '.pth')}")
-
-    finally:
+        print("\n[stop] sauvegarde avant arrêt...")
+        torch.save({
+            'epoch':epoch,'encoder':enc.state_dict(),'inter':inter.state_dict(),
+            'decoder_src':dec_s.state_dict(),'decoder_dst':dec_d.state_dict(),
+            'optimizer_encoder':opt_e.state_dict(),'optimizer_decoder_src':opt_s.state_dict(),
+            'optimizer_decoder_dst':opt_d.state_dict(),'mean_loss_src':ls,'mean_loss_dst':ld
+        },model_file)
+        print(f"Modèle sauvegardé : {model_file}")
         cv2.destroyAllWindows()
-
