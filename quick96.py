@@ -337,6 +337,9 @@ def draw_results(reconstruct_src, target_src, reconstruct_dst, target_dst, fake,
 
 # ------------------------------- ENTRAÎNEMENT ------------------------------
 def train(data_path: str, model_name='Quick96', new_model=False, saved_models_dir='saved_model'):
+    print("c'est tout cassé faut recommencer")
+    if 1==1:
+        return
     saved_models_dir = Path(saved_models_dir)
     lr = 1e-4
     dataset = FaceData(data_path)
