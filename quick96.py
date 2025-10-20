@@ -1,41 +1,25 @@
 import sys
 import os
-import datetime
-import time
+import numpy as np
+import cv2
+import torch
+import torch.nn as nn
+import torchvision.utils
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+import matplotlib.pyplot as plt
 from random import choice
 from glob import glob
 from pathlib import Path
-import platform
-import numpy as np
-import cv2
-import torchvision.utils
-from PIL import Image
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
-
 plt.style.use('dark_background')
+px = 1 / plt.rcParams['figure.dpi']
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # --------------------------------------------------------------------------
-# --- Détection d'environnement graphique (Linux sans écran = pas d'affichage)
-# --------------------------------------------------------------------------
-def can_display():
-    if platform.system() == "Linux":
-        return "DISPLAY" in os.environ and bool(os.environ["DISPLAY"])
-    elif platform.system() in ["Darwin", "Windows"]:
-        return True
-    return False
-
-HAS_DISPLAY = can_display()
-
-# --------------------------------------------------------------------------
-# ------------------------ PARAMÈTRES DE TRANSFORMATION ---------------------
+# ----------------------- Data augmentation utils --------------------------
 # --------------------------------------------------------------------------
 random_transform_args = {
     'rotation_range': 10,
@@ -43,23 +27,6 @@ random_transform_args = {
     'shift_range': 0.05,
     'random_flip': 0.5,
 }
-
-def get_training_data(images, batch_size):
-    indices = np.random.randint(len(images), size=batch_size)
-    for i, index in enumerate(indices):
-        image = images[index]
-        image = random_transform(image, **random_transform_args)
-        warped_img, target_img = random_warp(image)
-
-        if i == 0:
-            warped_images = np.empty((batch_size,) + warped_img.shape, warped_img.dtype)
-            target_images = np.empty((batch_size,) + target_img.shape, warped_img.dtype)
-
-        warped_images[i] = warped_img
-        target_images[i] = target_img
-
-    return warped_images, target_images
-
 
 def random_transform(image, rotation_range, zoom_range, shift_range, random_flip):
     h, w = image.shape[0:2]
@@ -74,28 +41,40 @@ def random_transform(image, rotation_range, zoom_range, shift_range, random_flip
         result = result[:, ::-1]
     return result
 
-
 def random_warp(image):
     h, w = image.shape[:2]
     range_ = np.linspace(h / 2 - h * 0.4, h / 2 + h * 0.4, 5)
-    mapx = np.broadcast_to(range_, (5, 5))
-    mapy = mapx.T
-    mapx = mapx + np.random.normal(size=(5, 5), scale=3*h/256)
-    mapy = mapy + np.random.normal(size=(5, 5), scale=3*h/256)
+    mapx = np.broadcast_to(range_, (5, 5)).copy()
+    mapy = mapx.T.copy()
+    noise = 3 * h / 256
+    mapx += np.random.normal(size=(5, 5), scale=noise)
+    mapy += np.random.normal(size=(5, 5), scale=noise)
     interp_mapx = cv2.resize(mapx, (w, h)).astype('float32')
     interp_mapy = cv2.resize(mapy, (w, h)).astype('float32')
     warped_image = cv2.remap(image, interp_mapx, interp_mapy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
-    target_image = cv2.resize(image, (w // 2, h // 2))
-    return np.clip(warped_image, 0, 1), np.clip(target_image, 0, 1)
+    warped_image = np.nan_to_num(np.clip(warped_image, 0, 1))
+    return warped_image, image.copy()
 
+def get_training_data(images, batch_size):
+    indices = np.random.randint(len(images), size=batch_size)
+    for i, index in enumerate(indices):
+        image = images[index]
+        image = random_transform(image, **random_transform_args)
+        warped_img, target_img = random_warp(image)
+        if i == 0:
+            warped_images = np.empty((batch_size,) + warped_img.shape, warped_img.dtype)
+            target_images = np.empty((batch_size,) + target_img.shape, warped_img.dtype)
+        warped_images[i] = warped_img
+        target_images[i] = target_img
+    return warped_images, target_images
 
 # --------------------------------------------------------------------------
-# ----------------------------- DATASET ------------------------------------
+# ---------------------------- Dataset class -------------------------------
 # --------------------------------------------------------------------------
 class FaceData(Dataset):
     def __init__(self, data_path):
-        self.image_files_src = glob(data_path + '/src/aligned/*.jpg')
-        self.image_files_dst = glob(data_path + '/dst/aligned/*.jpg')
+        self.image_files_src = [f for f in glob(data_path + '/src/aligned/*.jpg') if cv2.haveImageReader(f)]
+        self.image_files_dst = [f for f in glob(data_path + '/dst/aligned/*.jpg') if cv2.haveImageReader(f)]
 
     def __len__(self):
         return min(len(self.image_files_src), len(self.image_files_dst))
@@ -103,62 +82,43 @@ class FaceData(Dataset):
     def __getitem__(self, inx):
         image_file_src = choice(self.image_files_src)
         image_file_dst = choice(self.image_files_dst)
-
-        # Lecture, redimensionnement, normalisation
         image_src = np.asarray(Image.open(image_file_src).convert('RGB').resize((192, 192)), dtype=np.float32) / 255.
         image_dst = np.asarray(Image.open(image_file_dst).convert('RGB').resize((192, 192)), dtype=np.float32) / 255.
-
-        # Nettoyage des valeurs anormales
         image_src = np.nan_to_num(np.clip(image_src, 0, 1))
         image_dst = np.nan_to_num(np.clip(image_dst, 0, 1))
-
-        # Vérification de cohérence (évite crash si image vide ou saturée)
-        if not np.isfinite(image_src).all():
-            print(f"[warn] Image src invalide: {image_file_src}")
-            image_src = np.zeros((192, 192, 3), dtype=np.float32)
-        if not np.isfinite(image_dst).all():
-            print(f"[warn] Image dst invalide: {image_file_dst}")
-            image_dst = np.zeros((192, 192, 3), dtype=np.float32)
-
         return image_src, image_dst
-
 
     def collate_fn(self, batch):
         images_src, images_dst = list(zip(*batch))
         warp_image_src, target_image_src = get_training_data(images_src, len(images_src))
+        warp_image_src = torch.tensor(warp_image_src, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
+        target_image_src = torch.tensor(target_image_src, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
         warp_image_dst, target_image_dst = get_training_data(images_dst, len(images_dst))
-        to_tensor = lambda x: torch.tensor(x, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
-        return to_tensor(warp_image_src), to_tensor(target_image_src), to_tensor(warp_image_dst), to_tensor(target_image_dst)
-
+        warp_image_dst = torch.tensor(warp_image_dst, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
+        target_image_dst = torch.tensor(target_image_dst, dtype=torch.float32).permute(0, 3, 1, 2).to(device)
+        return warp_image_src, target_image_src, warp_image_dst, target_image_dst
 
 # --------------------------------------------------------------------------
-# ---------------------------- BLOCS DU MODÈLE -----------------------------
+# ----------------------------- Model blocks -------------------------------
 # --------------------------------------------------------------------------
 def pixel_norm(x, dim=-1, eps=1e-8):
     norm = torch.sqrt(torch.mean(x ** 2, dim=dim, keepdim=True) + eps)
     norm = torch.clamp(norm, min=eps)
     return x / norm
 
-
 def depth_to_space(x, size=2):
-    """Reformate les canaux en espace (inverse de PixelShuffle)."""
     b, c, h, w = x.shape
-    if c % (size * size) != 0:
-        # Correction automatique du nombre de canaux non divisible par 4
-        pad = (size * size) - (c % (size * size))
-        x = torch.nn.functional.pad(x, (0, 0, 0, 0, 0, pad))
-        c += pad
+    out_h = size * h
+    out_w = size * w
     out_c = c // (size * size)
-    out_h = h * size
-    out_w = w * size
-    x = x.view(b, out_c, size, size, h, w)
-    x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
-    return x.view(b, out_c, out_h, out_w)
+    x = x.reshape((-1, size, size, out_c, h, w))
+    x = x.permute((0, 3, 4, 1, 5, 2))
+    x = x.reshape((-1, out_c, out_h, out_w))
+    return x
 
 class DepthToSpace(nn.Module):
     def forward(self, x, size=2):
         return depth_to_space(x, size)
-
 
 class Encoder(nn.Module):
     def __init__(self):
@@ -174,10 +134,44 @@ class Encoder(nn.Module):
             nn.LeakyReLU(0.1, True),
             nn.Flatten(),
         )
-
     def forward(self, x):
-        return pixel_norm(self.encoder(x), dim=-1)
+        x = self.encoder(x)
+        return pixel_norm(x, dim=-1)
 
+class Upsample(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.upsample = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding='same'),
+            nn.LeakyReLU(0.1, True),
+            DepthToSpace()
+        )
+    def forward(self, x):
+        return self.upsample(x)
+
+class ResBlock(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, in_channels, 3, padding='same')
+        self.conv2 = nn.Conv2d(in_channels, in_channels, 3, padding='same')
+    def forward(self, x):
+        y = nn.functional.leaky_relu(self.conv1(x), 0.2)
+        y = self.conv2(y)
+        return nn.functional.leaky_relu(y + x, 0.2)
+
+class Inter(nn.Module):
+    def __init__(self, input_dim=18432):
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, 128)
+        self.fc2 = nn.Linear(128, 1152)
+        self.unflatten = nn.Unflatten(1, (128, 3, 3))
+        self.upsample = Upsample(128, 512)
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.fc2(x)
+        x = self.unflatten(x)
+        x = self.upsample(x)
+        return x
 
 class Upsample(nn.Module):
     def __init__(self, in_channels, out_channels):
