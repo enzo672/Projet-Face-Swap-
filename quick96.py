@@ -23,9 +23,6 @@ plt.style.use('dark_background')
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# --------------------------------------------------------------------------
-# --- Détection d'environnement graphique (Linux sans écran = pas d'affichage)
-# --------------------------------------------------------------------------
 def can_display():
     if platform.system() == "Linux":
         return "DISPLAY" in os.environ and bool(os.environ["DISPLAY"])
@@ -35,9 +32,6 @@ def can_display():
 
 HAS_DISPLAY = can_display()
 
-# --------------------------------------------------------------------------
-# ------------------------ PARAMÈTRES DE TRANSFORMATION ---------------------
-# --------------------------------------------------------------------------
 random_transform_args = {
     'rotation_range': 10,
     'zoom_range': 0.05,
@@ -101,9 +95,6 @@ def random_warp(image):
     return warped_image, target_image
 
 
-# --------------------------------------------------------------------------
-# ----------------------------- DATASET ------------------------------------
-# --------------------------------------------------------------------------
 class FaceData(Dataset):
     def __init__(self, data_path):
         self.image_files_src = glob(data_path + '/src/aligned/*.jpg')
@@ -130,9 +121,6 @@ class FaceData(Dataset):
         return warp_image_src, target_image_src, warp_image_dst, target_image_dst
 
 
-# --------------------------------------------------------------------------
-# ---------------------------- BLOCS DU MODÈLE -----------------------------
-# --------------------------------------------------------------------------
 def pixel_norm(x, dim=-1):
     return x / torch.sqrt(torch.mean(x ** 2, dim=dim, keepdim=True) + 1e-06)
 
@@ -242,9 +230,6 @@ class Decoder(nn.Module):
         return torch.sigmoid(x)
 
 
-# --------------------------------------------------------------------------
-# ------------------------ DSSIM / VISUALISATION ----------------------------
-# --------------------------------------------------------------------------
 def create_window(size=11, sigma=1.5, channels=1):
     gk1d = torch.tensor(cv2.getGaussianKernel(size, sigma), dtype=torch.float32)
     gk2d = gk1d @ gk1d.t()
@@ -335,7 +320,7 @@ def draw_results(reconstruct_src, target_src, reconstruct_dst, target_dst, fake,
 
 
 
-# ------------------------------- ENTRAÎNEMENT ------------------------------
+# entrainement
 def train(data_path: str, model_name='Quick96', new_model=False, saved_models_dir='saved_model'):
     print("c'est tout cassé faut recommencer")
     if 1==1:
@@ -391,7 +376,7 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
             for ii, (warp_im_src, target_im_src, warp_im_dst, target_im_dst) in enumerate(
                 tqdm(dataloader, desc=f"Epoch {epoch}")
             ):
-                # ------------------ SRC ------------------
+                # SRC 
                 latent_src = inter(encoder(warp_im_src))
                 reconstruct_im_src = decoder_src(latent_src)
                 reconstruct_im_src = torch.clamp(torch.nan_to_num(reconstruct_im_src, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
@@ -406,7 +391,7 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
                 optim_encoder.step()
                 optim_decoder_src.step()
 
-                # ------------------ DST ------------------
+                # DST 
                 latent_dst = inter(encoder(warp_im_dst))
                 reconstruct_im_dst = decoder_dst(latent_dst)
                 reconstruct_im_dst = torch.clamp(torch.nan_to_num(reconstruct_im_dst, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
@@ -424,7 +409,7 @@ def train(data_path: str, model_name='Quick96', new_model=False, saved_models_di
                 mean_epoch_loss_src.append(loss_src_val.item())
                 mean_epoch_loss_dst.append(loss_dst_val.item())
 
-                # ------------------ Affichage ------------------
+                # Affichage 
                 if first_run:
                     first_run = False
                     plt.ioff()
