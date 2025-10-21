@@ -285,6 +285,7 @@ def draw_results(reconstruct_src, target_src, reconstruct_dst, target_dst, fake,
         im_grid = cv2.resize(im_grid, (target_w, im_grid.shape[0]))
 
     final_image = np.vstack([image_array, im_grid])
+    final_image = np.nan_to_num(final_image, nan=1.0, posinf=0.0, neginf=0.0)
     final_image = np.clip(final_image[..., ::-1] * 255, 0, 255).astype(np.uint8)
     cv2.destroyAllWindows()
     return final_image
@@ -293,7 +294,7 @@ def draw_results(reconstruct_src, target_src, reconstruct_dst, target_dst, fake,
 def train(data_path: str, model_name='Quick96', new_model=False, saved_models_dir='saved_model'):
     saved_models_dir = Path(saved_models_dir)
     lr = 1e-4
-    dataset = FaceData(data_path)
+    dataset = FaceDatrrra(data_path)
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=dataset.collate_fn)
 
     encoder = Encoder().to(device)
