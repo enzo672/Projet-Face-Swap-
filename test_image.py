@@ -181,6 +181,12 @@ restored_mask = (restored_mask > 1).astype(np.uint8) * 255
 center = (x_d + w_d // 2, y_d + h_d // 2)
 
 # Fusion
+print("fake_face:", fake_face.shape, fake_face.dtype)
+print("dst:", dst.shape, dst.dtype)
+print("mask:", restored_mask.shape, restored_mask.dtype)
+print("mask min/max:", restored_mask.min(), restored_mask.max())
+print("center:", center)
+
 try:
     blended = cv2.seamlessClone(restored_face, dst, restored_mask, center, cv2.MIXED_CLONE)
 except Exception as e:
