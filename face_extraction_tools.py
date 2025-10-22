@@ -162,31 +162,47 @@ class FaceExtractor:
         face_aligned = cv2.warpAffine(image, M, (desired_face_width, desired_face_height), flags=cv2.INTER_CUBIC)
         return face_aligned
 
-    @staticmethod
-    def extract(image, face, desired_face_width=256, left_eye_desired_coordinate=np.array((0.37, 0.37))):
-        """
-        Align the face so the eyes will be at the same level
-        Args:
-            image (np.ndarray): image with face
-            face (np.ndarray):  face coordinates from the detection step
-            desired_face_width (int): the final width of the aligned face image
-            left_eye_desired_coordinate (np.ndarray): a length 2 array of values between
-             0 and 1 where the left eye should be in the aligned image
+   @staticmethod
+def extract(image, face, desired_face_width=256, left_eye_desired_coordinate=np.array((0.37, 0.37))):
+    """
+    Aligne le visage et renvoie aussi la matrice de transformation affine.
+    Args:
+        image (np.ndarray): image avec le visage
+        face (np.ndarray): coordonnées YuNet (15 valeurs)
+        desired_face_width (int): largeur finale de l’image du visage aligné
+        left_eye_desired_coordinate (np.ndarray): position normalisée de l’œil gauche dans l’image alignée
 
-        Returns:
-            (np.ndarray): aligned face image
-        """
-        desired_face_height = desired_face_width
+    Returns:
+        (np.ndarray): image alignée
+        (tuple): [x, y, w, h] du rectangle englobant approximatif dans l’image d’origine
+        (np.ndarray): matrice de rotation/échelle (2x3)
+    """
+    desired_face_height = desired_face_width
+    right_eye_desired_coordinate = np.array((1 - left_eye_desired_coordinate[0], left_eye_desired_coordinate[1]))
 
-        # get coordinate of the center of the eyes in the image
-        right_eye = face[4:6]
-        left_eye = face[6:8]
+    # Coordonnées des yeux
+    right_eye = face[4:6]
+    left_eye = face[6:8]
 
-        eyes_center = (left_eye + right_eye) // 2
+    # Calcul de la rotation
+    dist_eyes_x = right_eye[0] - left_eye[0]
+    dist_eyes_y = right_eye[1] - left_eye[1]
+    dist_between_eyes = np.sqrt(dist_eyes_x ** 2 + dist_eyes_y ** 2)
+    angle = np.degrees(np.arctan2(dist_eyes_y, dist_eyes_x))
 
-        x_left = (eyes_center[0] - desired_face_width//2).astype(int)
-        width = desired_face_width
-        y_top = (eyes_center[1] - left_eye_desired_coordinate[1] * desired_face_height).astype(int)
-        height = desired_face_height
-        face = image[y_top:y_top+height, x_left:x_left+width]
-        return face, [x_left, y_top, width, height]
+    eyes_center = (left_eye + right_eye) // 2
+    desired_dist_between_eyes = desired_face_width * (
+        right_eye_desired_coordinate[0] - left_eye_desired_coordinate[0])
+    scale = desired_dist_between_eyes / dist_between_eyes
+
+    M = cv2.getRotationMatrix2D(tuple(eyes_center), angle, scale)
+    M[0, 2] += (desired_face_width * 0.5 - eyes_center[0])
+    M[1, 2] += (desired_face_height * left_eye_desired_coordinate[1] - eyes_center[1])
+
+    aligned_face = cv2.warpAffine(image, M, (desired_face_width, desired_face_height), flags=cv2.INTER_CUBIC)
+
+    # Pour information (bbox approx)
+    x, y = int(eyes_center[0] - desired_face_width // 2), int(eyes_center[1] - desired_face_height // 2)
+    w, h = desired_face_width, desired_face_height
+
+    return aligned_face, (x, y, w, h), M
