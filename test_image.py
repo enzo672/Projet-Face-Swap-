@@ -68,3 +68,49 @@ cv2.waitKey(0)
 cv2.destroyAllWindows()
 
 print("✅ Test terminé. Image enregistrée : data/face_swap_test.jpg")
+
+
+
+
+import cv2
+import numpy as np
+from pathlib import Path
+from face_masking import FaceMasking
+
+# --- Images alignées ---
+src_path = Path("data/src/aligned/00000.jpg")
+dst_path = Path("data/dst/aligned/00000.jpg")
+src = cv2.imread(str(src_path))
+dst = cv2.imread(str(dst_path))
+
+h, w = dst.shape[:2]
+face_masker = FaceMasking()
+
+# --- Test sans modèle (juste collage brut) ---
+fake_face = src.copy()
+
+# --- Création du masque ---
+mask = face_masker.get_mask(fake_face)
+mask = cv2.GaussianBlur(mask, (15, 15), 10)
+
+# Debug : affichage du masque
+cv2.imshow("mask", mask)
+cv2.imwrite("data/mask_debug.jpg", mask)
+
+# --- Centrage (au milieu de l'image) ---
+center = (w // 2, h // 2)
+
+# --- Fusion ---
+try:
+    blended = cv2.seamlessClone(fake_face, dst, mask, center, cv2.MIXED_CLONE)
+except Exception as e:
+    print(f"Erreur seamlessClone: {e}")
+    blended = dst
+
+cv2.imshow("source (src)", src)
+cv2.imshow("destination (dst)", dst)
+cv2.imshow("blended (swap)", blended)
+cv2.imwrite("data/face_swap_test_debug.jpg", blended)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
+
