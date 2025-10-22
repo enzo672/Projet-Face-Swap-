@@ -124,22 +124,24 @@ from face_masking import FaceMasking
 # -------------------------------------
 # CONFIG
 # -------------------------------------
-src_path = Path("data/src/aligned/00000.jpg")
-dst_path = Path("data/dst/aligned/00000.jpg")
+src_path = Path("data/src/aligned/00000.jpg")  # visage source (B)
+dst_path = Path("data/dst/aligned/00000.jpg")  # visage destination (A)
 output_path = Path("data/face_swap_yunet_test.jpg")
 
-# Charger les images
+# -------------------------------------
+# LECTURE DES IMAGES
+# -------------------------------------
 src = cv2.imread(str(src_path))
 dst = cv2.imread(str(dst_path))
 if src is None or dst is None:
     raise FileNotFoundError("❌ Impossible de charger les images source ou destination.")
 
-# Initialiser YuNet et le maskeur
-face_extractor = FaceExtractor((dst.shape[1], dst.shape[0]))
+h, w = dst.shape[:2]
+face_extractor = FaceExtractor((w, h))
 face_masker = FaceMasking()
 
 # -------------------------------------
-# DÉTECTION DES VISAGES
+# DÉTECTION DES VISAGES AVEC YUNET
 # -------------------------------------
 ret_s, faces_s = face_extractor.detect(src)
 ret_d, faces_d = face_extractor.detect(dst)
@@ -155,17 +157,16 @@ if faces_d is None or len(faces_d) == 0:
 face_src, (x_s, y_s, w_s, h_s), M_s = face_extractor.extract(src, faces_s[0], desired_face_width=128)
 face_dst, (x_d, y_d, w_d, h_d), M_d = face_extractor.extract(dst, faces_d[0], desired_face_width=128)
 
-# Debug : affichage des visages alignés
+# Debug visuel des visages alignés
 cv2.imshow("face_src_aligned", face_src)
 cv2.imshow("face_dst_aligned", face_dst)
 
 # -------------------------------------
-# COLLAGE DU VISAGE (B sur A)
+# COLLAGE DU VISAGE SOURCE SUR DESTINATION
 # -------------------------------------
-# Pour ce test, on colle directement le visage aligné (pas de modèle Quick96)
 fake_face = face_src.copy()
 
-# Masque
+# Créer le masque
 mask = face_masker.get_mask(fake_face)
 mask = cv2.GaussianBlur(mask, (15, 15), 10)
 
@@ -177,24 +178,41 @@ restored_face = cv2.warpAffine(fake_face, M_inv, (w_dst, h_dst), flags=cv2.INTER
 restored_mask = cv2.warpAffine(mask, M_inv, (w_dst, h_dst), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_TRANSPARENT)
 restored_mask = (restored_mask > 1).astype(np.uint8) * 255
 
-# Centre du collage
+# -------------------------------------
+# NORMALISATION DES TAILLES (sécurité)
+# -------------------------------------
+# Si les tailles diffèrent -> on recentre plutôt que d'étirer
+if restored_face.shape[:2] != dst.shape[:2]:
+    canvas = np.zeros_like(dst)
+    mask_canvas = np.zeros((h_dst, w_dst), dtype=np.uint8)
+
+    y0 = (h_dst - restored_face.shape[0]) // 2
+    x0 = (w_dst - restored_face.shape[1]) // 2
+    canvas[y0:y0+restored_face.shape[0], x0:x0+restored_face.shape[1]] = restored_face
+    mask_canvas[y0:y0+restored_mask.shape[0], x0:x0+restored_mask.shape[1]] = restored_mask
+
+    restored_face = canvas
+    restored_mask = mask_canvas
+
+# S'assurer que le masque est 1 canal et uint8
+if restored_mask.ndim == 3:
+    restored_mask = cv2.cvtColor(restored_mask, cv2.COLOR_BGR2GRAY)
+restored_mask = np.clip(restored_mask, 0, 255).astype(np.uint8)
+
+# Centre du collage (milieu de la zone du visage destination)
 center = (x_d + w_d // 2, y_d + h_d // 2)
 
-# Fusion
-print("fake_face:", fake_face.shape, fake_face.dtype)
-print("dst:", dst.shape, dst.dtype)
-print("mask:", restored_mask.shape, restored_mask.dtype)
-print("mask min/max:", restored_mask.min(), restored_mask.max())
-print("center:", center)
-
+# -------------------------------------
+# FUSION (cv2.seamlessClone)
+# -------------------------------------
 try:
-    blended = cv2.seamlessClone(restored_face, dst, restored_mask, center, cv2.MIXED_CLONE)
+    blended = cv2.seamlessClone(restored_face, dst, restored_mask, center, cv2.NORMAL_CLONE)
 except Exception as e:
     print(f"⚠️ Erreur lors du seamlessClone : {e}")
     blended = dst
 
 # -------------------------------------
-# AFFICHAGE ET SAUVEGARDE
+# DEBUG VISUEL ET SAUVEGARDE
 # -------------------------------------
 concat = np.hstack([
     cv2.resize(src, (w_dst, h_dst)),
@@ -208,5 +226,6 @@ cv2.waitKey(0)
 cv2.destroyAllWindows()
 
 print(f"✅ Test réussi ! Image sauvegardée dans : {output_path}")
+
 
 
