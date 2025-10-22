@@ -114,3 +114,93 @@ cv2.imwrite("data/face_swap_test_debug.jpg", blended)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
 
+
+import cv2
+import numpy as np
+from pathlib import Path
+from face_extraction_tools import FaceExtractor
+from face_masking import FaceMasking
+
+# -------------------------------------
+# CONFIG
+# -------------------------------------
+src_path = Path("data/src/aligned/00000.jpg")
+dst_path = Path("data/dst/aligned/00000.jpg")
+output_path = Path("data/face_swap_yunet_test.jpg")
+
+# Charger les images
+src = cv2.imread(str(src_path))
+dst = cv2.imread(str(dst_path))
+if src is None or dst is None:
+    raise FileNotFoundError("❌ Impossible de charger les images source ou destination.")
+
+# Initialiser YuNet et le maskeur
+face_extractor = FaceExtractor((dst.shape[1], dst.shape[0]))
+face_masker = FaceMasking()
+
+# -------------------------------------
+# DÉTECTION DES VISAGES
+# -------------------------------------
+ret_s, faces_s = face_extractor.detect(src)
+ret_d, faces_d = face_extractor.detect(dst)
+
+if faces_s is None or len(faces_s) == 0:
+    raise RuntimeError("❌ Aucun visage détecté dans la source.")
+if faces_d is None or len(faces_d) == 0:
+    raise RuntimeError("❌ Aucun visage détecté dans la destination.")
+
+# -------------------------------------
+# EXTRACTION / ALIGNEMENT
+# -------------------------------------
+face_src, (x_s, y_s, w_s, h_s), M_s = face_extractor.extract(src, faces_s[0], desired_face_width=128)
+face_dst, (x_d, y_d, w_d, h_d), M_d = face_extractor.extract(dst, faces_d[0], desired_face_width=128)
+
+# Debug : affichage des visages alignés
+cv2.imshow("face_src_aligned", face_src)
+cv2.imshow("face_dst_aligned", face_dst)
+
+# -------------------------------------
+# COLLAGE DU VISAGE (B sur A)
+# -------------------------------------
+# Pour ce test, on colle directement le visage aligné (pas de modèle Quick96)
+fake_face = face_src.copy()
+
+# Masque
+mask = face_masker.get_mask(fake_face)
+mask = cv2.GaussianBlur(mask, (15, 15), 10)
+
+# Calcul de la transformation inverse du visage destination
+M_inv = cv2.invertAffineTransform(M_d)
+
+h_dst, w_dst = dst.shape[:2]
+restored_face = cv2.warpAffine(fake_face, M_inv, (w_dst, h_dst), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_TRANSPARENT)
+restored_mask = cv2.warpAffine(mask, M_inv, (w_dst, h_dst), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_TRANSPARENT)
+restored_mask = (restored_mask > 1).astype(np.uint8) * 255
+
+# Centre du collage
+center = (x_d + w_d // 2, y_d + h_d // 2)
+
+# Fusion
+try:
+    blended = cv2.seamlessClone(restored_face, dst, restored_mask, center, cv2.MIXED_CLONE)
+except Exception as e:
+    print(f"⚠️ Erreur lors du seamlessClone : {e}")
+    blended = dst
+
+# -------------------------------------
+# AFFICHAGE ET SAUVEGARDE
+# -------------------------------------
+concat = np.hstack([
+    cv2.resize(src, (w_dst, h_dst)),
+    cv2.resize(dst, (w_dst, h_dst)),
+    blended
+])
+
+cv2.imshow("YuNet Face Swap Debug (SRC | DST | RESULT)", concat)
+cv2.imwrite(str(output_path), blended)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
+
+print(f"✅ Test réussi ! Image sauvegardée dans : {output_path}")
+
+
